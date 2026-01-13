@@ -16,6 +16,7 @@ Configure in Claude Code (~/.claude.json or similar):
       }
     }
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +34,8 @@ from mcp.types import (
     CallToolResult,
 )
 
-from config import config
-from local_embedder import embed_query, warmup
+from .config import config
+from .local_embedder import embed_query, warmup
 
 
 class KnowledgeBase:
@@ -147,12 +148,8 @@ class KnowledgeBase:
         Uses Reciprocal Rank Fusion (RRF) to merge results.
         """
         # Get both result sets
-        semantic_results = self.semantic_search(
-            query, limit=limit * 2, source_type=source_type
-        )
-        keyword_results = self.keyword_search(
-            query, limit=limit * 2, source_type=source_type
-        )
+        semantic_results = self.semantic_search(query, limit=limit * 2, source_type=source_type)
+        keyword_results = self.keyword_search(query, limit=limit * 2, source_type=source_type)
 
         # RRF scoring
         k = 60  # RRF constant
@@ -454,12 +451,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
         elif name == "list_projects":
             projects = kb.list_projects()
             if not projects:
-                return CallToolResult(
-                    content=[TextContent(type="text", text="No projects found.")]
-                )
+                return CallToolResult(content=[TextContent(type="text", text="No projects found.")])
             return CallToolResult(
                 content=[
-                    TextContent(type="text", text="## Projects\n\n" + "\n".join(f"- {p}" for p in projects))
+                    TextContent(
+                        type="text", text="## Projects\n\n" + "\n".join(f"- {p}" for p in projects)
+                    )
                 ]
             )
 
@@ -478,9 +475,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
 
         else:
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"Unknown tool: {name}")]
-            )
+            return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
     except Exception as e:
         return CallToolResult(content=[TextContent(type="text", text=f"Error: {e!s}")])

@@ -6,6 +6,7 @@ Usage:
     python scripts/watch.py ~/notes ~/docs
     python scripts/watch.py ~/notes --local  # Use CPU embedding
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,11 +17,8 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from config import config
-from ingest import Ingester, parse_markdown, parse_code, content_hash
+from ..config import config
+from ..ingest import Ingester, parse_document, content_hash
 
 
 class KnowledgeHandler(FileSystemEventHandler):
@@ -74,11 +72,7 @@ class KnowledgeHandler(FileSystemEventHandler):
         print(f"[watch] Updating: {path}")
 
         try:
-            if path.suffix in config.markdown_extensions:
-                doc = parse_markdown(path)
-            else:
-                doc = parse_code(path)
-
+            doc = parse_document(path)
             self.ingester.ingest_documents([doc])
 
         except Exception as e:

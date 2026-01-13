@@ -8,6 +8,7 @@ Usage:
     python ingest.py ~/notes ~/projects/docs
     python ingest.py ~/notes --metadata '{"project": "personal"}'
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,7 +25,7 @@ import yaml
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
-from config import config
+from .config import config
 
 
 @dataclass
@@ -120,7 +121,7 @@ def extract_frontmatter(content: str) -> tuple[dict, str]:
         return {}, content
 
 
-def extract_sections(content: str) -> list[tuple[str, str]]:
+def extract_sections_markdown(content: str) -> list[tuple[str, str]]:
     """
     Extract sections from markdown content.
 
@@ -137,6 +138,86 @@ def extract_sections(content: str) -> list[tuple[str, str]]:
             current_header = part.strip().lstrip("#").strip()
         elif part.strip():
             sections.append((current_header, part.strip()))
+
+    return sections
+
+
+def extract_org_metadata(content: str) -> tuple[dict, str]:
+    """
+    Extract org-mode metadata from file header.
+
+    Parses #+KEY: value lines at the start of the file.
+    Returns (metadata_dict, remaining_content).
+    """
+    metadata = {}
+    lines = content.split("\n")
+    body_start = 0
+
+    for i, line in enumerate(lines):
+        match = re.match(r"^#\+(\w+):\s*(.*)$", line, re.IGNORECASE)
+        if match:
+            key = match.group(1).lower()
+            value = match.group(2).strip()
+            if key in metadata:
+                # Handle multiple values (e.g., multiple #+TAGS lines)
+                if isinstance(metadata[key], list):
+                    metadata[key].append(value)
+                else:
+                    metadata[key] = [metadata[key], value]
+            else:
+                metadata[key] = value
+            body_start = i + 1
+        elif line.strip() and not line.startswith("#"):
+            # Stop at first non-metadata, non-comment line
+            break
+
+    remaining = "\n".join(lines[body_start:])
+    return metadata, remaining
+
+
+def extract_org_tags(header: str) -> tuple[str, list[str]]:
+    """
+    Extract tags from an org header line.
+
+    Org tags appear at end of header like: * Header text  :tag1:tag2:
+    Returns (header_without_tags, list_of_tags).
+    """
+    match = re.search(r"\s+(:[:\w]+:)\s*$", header)
+    if match:
+        tag_str = match.group(1)
+        tags = [t for t in tag_str.split(":") if t]
+        header_clean = header[: match.start()].strip()
+        return header_clean, tags
+    return header, []
+
+
+def extract_sections_org(content: str) -> list[tuple[str, str]]:
+    """
+    Extract sections from org-mode content.
+
+    Org headers use * (one or more) at start of line.
+    Returns list of (header, section_content) tuples.
+    """
+    # Split by org headers (any level)
+    parts = re.split(r"(^\*+\s+.+$)", content, flags=re.MULTILINE)
+
+    sections = []
+    current_header = None
+
+    for part in parts:
+        if re.match(r"^\*+\s+", part):
+            # Remove leading stars and any TODO keywords
+            header = re.sub(r"^\*+\s+", "", part)
+            # Remove common TODO keywords
+            header = re.sub(r"^(TODO|DONE|WAITING|CANCELLED|NEXT|SOMEDAY)\s+", "", header)
+            # Extract and remove tags
+            header, _ = extract_org_tags(header)
+            current_header = header.strip()
+        elif part.strip():
+            # Skip property drawers
+            clean_part = re.sub(r":PROPERTIES:.*?:END:", "", part, flags=re.DOTALL)
+            if clean_part.strip():
+                sections.append((current_header, clean_part.strip()))
 
     return sections
 
@@ -308,14 +389,16 @@ def chunk_text(
                             # Single sentence too large - hard split
                             yield chunk_index, sentence[:char_size]
                             chunk_index += 1
-                            current_chunk = sentence[-char_overlap:] if len(sentence) > char_overlap else ""
+                            current_chunk = (
+                                sentence[-char_overlap:] if len(sentence) > char_overlap else ""
+                            )
 
     if current_chunk.strip():
         yield chunk_index, current_chunk.strip()
 
 
 def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
-    """Parse a markdown file into a Document."""
+    """Parse a markdown (.md) file into a Document."""
     content = path.read_text(encoding="utf-8")
 
     # Extract frontmatter
@@ -336,7 +419,7 @@ def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
     title = title_match.group(1) if title_match else path.stem
 
     # Extract sections
-    sections = extract_sections(body)
+    sections = extract_sections_markdown(body)
 
     return Document(
         source_path=str(path.resolve()),
@@ -345,6 +428,87 @@ def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
         content=content,
         metadata=metadata,
         sections=sections,
+    )
+
+
+def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Parse an org-mode (.org) file into a Document."""
+    content = path.read_text(encoding="utf-8")
+
+    # Extract org metadata (#+KEY: value lines)
+    org_meta, body = extract_org_metadata(content)
+
+    # Build DocumentMetadata from org metadata
+    tags = []
+    # #+FILETAGS: :tag1:tag2:
+    if filetags := org_meta.get("filetags"):
+        tags.extend([t for t in filetags.split(":") if t])
+    # #+TAGS: tag1 tag2
+    if tag_str := org_meta.get("tags"):
+        if isinstance(tag_str, list):
+            for t in tag_str:
+                tags.extend(t.split())
+        else:
+            tags.extend(tag_str.split())
+
+    metadata = DocumentMetadata(
+        tags=tags,
+        project=org_meta.get("project"),
+        category=org_meta.get("category"),
+    )
+
+    # Merge extra metadata
+    if extra_metadata:
+        if "tags" in extra_metadata:
+            metadata.tags.extend(extra_metadata["tags"])
+        if "project" in extra_metadata:
+            metadata.project = extra_metadata["project"]
+        if "category" in extra_metadata:
+            metadata.category = extra_metadata["category"]
+
+    # Extract title from #+TITLE or first header
+    title = org_meta.get("title")
+    if not title:
+        title_match = re.search(r"^\*+\s+(.+)$", body, re.MULTILINE)
+        if title_match:
+            title, _ = extract_org_tags(title_match.group(1))
+            # Remove TODO keywords from title
+            title = re.sub(r"^(TODO|DONE|WAITING|CANCELLED|NEXT|SOMEDAY)\s+", "", title)
+        else:
+            title = path.stem
+
+    # Extract sections
+    sections = extract_sections_org(body)
+
+    return Document(
+        source_path=str(path.resolve()),
+        source_type="org",
+        title=title,
+        content=content,
+        metadata=metadata,
+        sections=sections,
+    )
+
+
+def parse_text(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Parse a plain text file into a Document (no special parsing)."""
+    content = path.read_text(encoding="utf-8")
+
+    metadata = DocumentMetadata()
+    if extra_metadata:
+        metadata = DocumentMetadata(
+            tags=extra_metadata.get("tags", []),
+            project=extra_metadata.get("project"),
+            category=extra_metadata.get("category"),
+        )
+
+    return Document(
+        source_path=str(path.resolve()),
+        source_type="text",
+        title=path.stem,
+        content=content,
+        metadata=metadata,
+        sections=[],  # No section parsing for raw text
     )
 
 
@@ -383,6 +547,20 @@ def parse_code(path: Path, extra_metadata: dict | None = None) -> Document:
     )
 
 
+def parse_document(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Route document to appropriate parser based on extension."""
+    if path.suffix == ".md":
+        return parse_markdown(path, extra_metadata)
+    elif path.suffix == ".org":
+        return parse_org(path, extra_metadata)
+    elif path.suffix in config.document_extensions:
+        return parse_text(path, extra_metadata)
+    elif path.suffix in config.code_extensions:
+        return parse_code(path, extra_metadata)
+    else:
+        raise ValueError(f"Unsupported file type: {path.suffix}")
+
+
 def collect_documents(
     root: Path,
     extra_metadata: dict | None = None,
@@ -399,10 +577,7 @@ def collect_documents(
             continue
 
         try:
-            if path.suffix in config.markdown_extensions:
-                yield parse_markdown(path, extra_metadata)
-            elif path.suffix in config.code_extensions:
-                yield parse_code(path, extra_metadata)
+            yield parse_document(path, extra_metadata)
         except Exception as e:
             print(f"Error parsing {path}: {e}", file=sys.stderr)
 
@@ -493,7 +668,7 @@ class Ingester:
                 self._embedder = modal.Cls.from_name("knowledge-embedder", "Embedder")()
             else:
                 # Fall back to local embedding
-                from local_embedder import embed_document
+                from .local_embedder import embed_document
 
                 class LocalEmbedder:
                     def embed_batch(self, texts):
@@ -623,7 +798,7 @@ Examples:
         "--metadata",
         type=json.loads,
         default={},
-        help="JSON metadata to attach (e.g., '{\"project\": \"myapp\"}')",
+        help='JSON metadata to attach (e.g., \'{"project": "myapp"}\')',
     )
     parser.add_argument(
         "--db-url",
@@ -647,10 +822,8 @@ Examples:
         if path.is_dir():
             documents.extend(collect_documents(path, args.metadata))
         elif path.is_file():
-            if path.suffix in config.markdown_extensions:
-                documents.append(parse_markdown(path, args.metadata))
-            elif path.suffix in config.code_extensions:
-                documents.append(parse_code(path, args.metadata))
+            if path.suffix in config.all_extensions:
+                documents.append(parse_document(path, args.metadata))
             else:
                 print(f"Skipping unsupported file: {path}", file=sys.stderr)
 

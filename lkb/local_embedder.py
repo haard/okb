@@ -7,9 +7,10 @@ Memory: ~1.5 GB for model
 
 The same nomic-embed-text model is used for consistency.
 """
+
 from functools import lru_cache
 
-from config import config
+from .config import config
 
 
 @lru_cache(maxsize=1)

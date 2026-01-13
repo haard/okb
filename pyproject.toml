@@ -1,5 +1,5 @@
 [project]
-name = "knowledge-base"
+name = "local-kb"
 version = "0.1.0"
 description = "Personal knowledge base with semantic search for Claude Code"
 requires-python = ">=3.11"
@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6.0",
     "watchdog>=3.0.0",
     "einops>=0.7.0",
+    "click>=8.0.0",
 ]
 
 [project.optional-dependencies]
@@ -22,13 +23,19 @@ dev = [
 ]
 
 [project.scripts]
-kb-ingest = "ingest:main"
-kb-server = "mcp_server:main"
-kb-watch = "scripts.watch:main"
+lkb = "lkb.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lkb"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "lkb/**",
+]
 
 [tool.ruff]
 line-length = 100
@@ -36,3 +43,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.11",
+]

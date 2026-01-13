@@ -6,24 +6,22 @@ Costs approximately $0.02 per 1000 chunks on T4 GPU.
 
 Usage:
     modal deploy modal_embedder.py
-    
+
 Then call from Python:
     embedder = modal.Cls.from_name("knowledge-embedder", "Embedder")()
     embeddings = embedder.embed_batch.remote(texts)
 """
+
 import modal
 
 app = modal.App("knowledge-embedder")
 
 # Container image with all dependencies
-embedder_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "sentence-transformers>=2.2.0",
-        "torch>=2.0.0",
-        "numpy>=1.24.0",
-        "einops>=0.7.0",  # Required by nomic
-    )
+embedder_image = modal.Image.debian_slim(python_version="3.11").pip_install(
+    "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "einops>=0.7.0",  # Required by nomic
 )
 
 
