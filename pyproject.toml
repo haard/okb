@@ -1,0 +1,38 @@
+[project]
+name = "knowledge-base"
+version = "0.1.0"
+description = "Personal knowledge base with semantic search for Claude Code"
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg[binary]>=3.1.0",
+    "pgvector>=0.2.0",
+    "sentence-transformers>=2.2.0",
+    "mcp>=1.0.0",
+    "pyyaml>=6.0",
+    "watchdog>=3.0.0",
+    "einops>=0.7.0",
+]
+
+[project.optional-dependencies]
+modal = ["modal>=0.60.0"]
+pdf = ["pymupdf>=1.23.0"]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+kb-ingest = "ingest:main"
+kb-server = "mcp_server:main"
+kb-watch = "scripts.watch:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

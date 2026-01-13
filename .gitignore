@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Ruff
+.ruff_cache/
+
+# mypy
+.mypy_cache/
+
+# Local config
+.env
+.env.local
+
+# Claude Code
+CLAUDE.md
+.claude/
+.mcp.json
+
+# Docker
+pgvector_data/
+
+# Model cache (large)
+.cache/
+sentence-transformers/

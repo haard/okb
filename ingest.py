@@ -1,0 +1,667 @@
+"""
+Document ingestion pipeline with contextual chunking.
+
+Collects documents, chunks them with context, generates embeddings via Modal,
+and stores in pgvector.
+
+Usage:
+    python ingest.py ~/notes ~/projects/docs
+    python ingest.py ~/notes --metadata '{"project": "personal"}'
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Generator
+
+import psycopg
+import yaml
+from pgvector.psycopg import register_vector
+from psycopg.rows import dict_row
+
+from config import config
+
+
+@dataclass
+class DocumentMetadata:
+    """Metadata extracted from document or provided externally."""
+
+    tags: list[str] = field(default_factory=list)
+    project: str | None = None
+    category: str | None = None
+    status: str | None = None
+    extra: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_frontmatter(cls, frontmatter: dict) -> DocumentMetadata:
+        """Create from YAML frontmatter."""
+        return cls(
+            tags=frontmatter.get("tags", []),
+            project=frontmatter.get("project"),
+            category=frontmatter.get("category"),
+            status=frontmatter.get("status"),
+            extra={
+                k: v
+                for k, v in frontmatter.items()
+                if k not in {"tags", "project", "category", "status"}
+            },
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict."""
+        result = {}
+        if self.tags:
+            result["tags"] = self.tags
+        if self.project:
+            result["project"] = self.project
+        if self.category:
+            result["category"] = self.category
+        if self.status:
+            result["status"] = self.status
+        if self.extra:
+            result.update(self.extra)
+        return result
+
+
+@dataclass
+class Document:
+    """A document to be indexed."""
+
+    source_path: str
+    source_type: str
+    title: str
+    content: str
+    metadata: DocumentMetadata = field(default_factory=DocumentMetadata)
+    sections: list[tuple[str, str]] = field(default_factory=list)  # (header, content)
+
+
+@dataclass
+class Chunk:
+    """A chunk ready for embedding."""
+
+    content: str  # Original text (for display)
+    embedding_text: str  # Contextualized text (for embedding)
+    chunk_index: int
+    token_count: int
+    metadata: dict = field(default_factory=dict)
+
+
+def content_hash(content: str) -> str:
+    """Generate hash for deduplication/change detection."""
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def extract_frontmatter(content: str) -> tuple[dict, str]:
+    """
+    Extract YAML frontmatter from markdown content.
+
+    Returns (frontmatter_dict, remaining_content).
+    """
+    if not content.startswith("---"):
+        return {}, content
+
+    # Find closing ---
+    end_match = re.search(r"\n---\s*\n", content[3:])
+    if not end_match:
+        return {}, content
+
+    frontmatter_text = content[3 : end_match.start() + 3]
+    remaining = content[end_match.end() + 3 :]
+
+    try:
+        frontmatter = yaml.safe_load(frontmatter_text) or {}
+        return frontmatter, remaining
+    except yaml.YAMLError:
+        return {}, content
+
+
+def extract_sections(content: str) -> list[tuple[str, str]]:
+    """
+    Extract sections from markdown content.
+
+    Returns list of (header, section_content) tuples.
+    """
+    # Split by headers (any level)
+    parts = re.split(r"(^#{1,6}\s+.+$)", content, flags=re.MULTILINE)
+
+    sections = []
+    current_header = None
+
+    for part in parts:
+        if re.match(r"^#{1,6}\s+", part):
+            current_header = part.strip().lstrip("#").strip()
+        elif part.strip():
+            sections.append((current_header, part.strip()))
+
+    return sections
+
+
+def extract_code_context(content: str, file_ext: str) -> dict:
+    """
+    Extract structural context from code files.
+
+    Returns dict with classes, functions, imports found.
+    """
+    context = {
+        "classes": [],
+        "functions": [],
+        "imports": [],
+    }
+
+    if file_ext == ".py":
+        # Python classes and functions
+        context["classes"] = re.findall(r"^class\s+(\w+)", content, re.MULTILINE)
+        context["functions"] = re.findall(r"^def\s+(\w+)", content, re.MULTILINE)
+        # Top-level imports
+        imports = re.findall(r"^(?:from\s+(\S+)|import\s+(\S+))", content, re.MULTILINE)
+        context["imports"] = [i[0] or i[1] for i in imports][:10]  # Limit
+
+    elif file_ext in {".js", ".ts", ".jsx", ".tsx"}:
+        # JavaScript/TypeScript
+        context["classes"] = re.findall(r"class\s+(\w+)", content)
+        context["functions"] = re.findall(
+            r"(?:function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\()",
+            content,
+        )
+        context["functions"] = [f[0] or f[1] for f in context["functions"]]
+        context["imports"] = re.findall(r"from\s+['\"]([^'\"]+)['\"]", content)[:10]
+
+    return {k: v for k, v in context.items() if v}
+
+
+def infer_project_from_path(path: Path) -> str | None:
+    """
+    Infer project name from file path.
+
+    Looks for common patterns like:
+    - ~/projects/{project}/...
+    - ~/code/{project}/...
+    - ~/notes/projects/{project}/...
+    """
+    parts = path.parts
+    project_indicators = {"projects", "code", "repos", "src"}
+
+    for i, part in enumerate(parts):
+        if part.lower() in project_indicators and i + 1 < len(parts):
+            return parts[i + 1]
+
+    return None
+
+
+def build_embedding_context(
+    chunk_text: str,
+    doc_title: str,
+    source_path: str,
+    source_type: str,
+    section_header: str | None = None,
+    metadata: DocumentMetadata | None = None,
+    code_context: dict | None = None,
+) -> str:
+    """
+    Build contextualized text for embedding.
+
+    This is what the embedding model sees. The original chunk_text
+    is stored separately for display.
+    """
+    parts = []
+
+    # Document identity
+    parts.append(f"Document: {doc_title}")
+
+    # Source type context
+    if source_type == "code":
+        path = Path(source_path)
+        parts.append(f"File: {path.name}")
+        if code_context:
+            if classes := code_context.get("classes"):
+                parts.append(f"Classes: {', '.join(classes[:5])}")
+            if functions := code_context.get("functions"):
+                parts.append(f"Functions: {', '.join(functions[:5])}")
+
+    # Project from metadata or path
+    project = None
+    if metadata and metadata.project:
+        project = metadata.project
+    else:
+        project = infer_project_from_path(Path(source_path))
+
+    if project:
+        parts.append(f"Project: {project}")
+
+    # Section context for long documents
+    if section_header:
+        parts.append(f"Section: {section_header}")
+
+    # Tags/topics from metadata
+    if metadata and metadata.tags:
+        parts.append(f"Topics: {', '.join(metadata.tags[:5])}")
+
+    if metadata and metadata.category:
+        parts.append(f"Category: {metadata.category}")
+
+    # The actual content
+    parts.append(f"Content: {chunk_text}")
+
+    return "\n".join(parts)
+
+
+def chunk_text(
+    text: str,
+    chunk_size: int = config.chunk_size,
+    chunk_overlap: int = config.chunk_overlap,
+) -> Generator[tuple[int, str], None, None]:
+    """
+    Split text into overlapping chunks.
+
+    Tries to break at paragraph/sentence boundaries.
+    Uses approximate token count (4 chars ≈ 1 token).
+    """
+    char_size = chunk_size * config.chars_per_token
+    char_overlap = chunk_overlap * config.chars_per_token
+
+    if len(text) <= char_size:
+        yield 0, text
+        return
+
+    # Split into paragraphs
+    paragraphs = re.split(r"\n\n+", text)
+
+    current_chunk = ""
+    chunk_index = 0
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        if len(current_chunk) + len(para) + 2 <= char_size:
+            current_chunk += para + "\n\n"
+        else:
+            if current_chunk.strip():
+                yield chunk_index, current_chunk.strip()
+                chunk_index += 1
+                # Keep overlap
+                overlap = current_chunk[-char_overlap:] if len(current_chunk) > char_overlap else ""
+                current_chunk = overlap + para + "\n\n"
+            else:
+                # Single paragraph too large - split by sentences
+                sentences = re.split(r"(?<=[.!?])\s+", para)
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) + 1 <= char_size:
+                        current_chunk += sentence + " "
+                    else:
+                        if current_chunk.strip():
+                            yield chunk_index, current_chunk.strip()
+                            chunk_index += 1
+                            overlap = (
+                                current_chunk[-char_overlap:]
+                                if len(current_chunk) > char_overlap
+                                else ""
+                            )
+                            current_chunk = overlap + sentence + " "
+                        else:
+                            # Single sentence too large - hard split
+                            yield chunk_index, sentence[:char_size]
+                            chunk_index += 1
+                            current_chunk = sentence[-char_overlap:] if len(sentence) > char_overlap else ""
+
+    if current_chunk.strip():
+        yield chunk_index, current_chunk.strip()
+
+
+def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Parse a markdown file into a Document."""
+    content = path.read_text(encoding="utf-8")
+
+    # Extract frontmatter
+    frontmatter, body = extract_frontmatter(content)
+    metadata = DocumentMetadata.from_frontmatter(frontmatter)
+
+    # Merge extra metadata
+    if extra_metadata:
+        if "tags" in extra_metadata:
+            metadata.tags.extend(extra_metadata["tags"])
+        if "project" in extra_metadata:
+            metadata.project = extra_metadata["project"]
+        if "category" in extra_metadata:
+            metadata.category = extra_metadata["category"]
+
+    # Extract title
+    title_match = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
+    title = title_match.group(1) if title_match else path.stem
+
+    # Extract sections
+    sections = extract_sections(body)
+
+    return Document(
+        source_path=str(path.resolve()),
+        source_type="markdown",
+        title=title,
+        content=content,
+        metadata=metadata,
+        sections=sections,
+    )
+
+
+def parse_code(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Parse a code file into a Document."""
+    content = path.read_text(encoding="utf-8")
+
+    metadata = DocumentMetadata()
+    if extra_metadata:
+        metadata = DocumentMetadata(
+            tags=extra_metadata.get("tags", []),
+            project=extra_metadata.get("project"),
+            category=extra_metadata.get("category"),
+        )
+
+    # Auto-tag by language
+    lang_tags = {
+        ".py": "python",
+        ".js": "javascript",
+        ".ts": "typescript",
+        ".sql": "sql",
+        ".sh": "bash",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+    }
+    if lang := lang_tags.get(path.suffix):
+        if lang not in metadata.tags:
+            metadata.tags.append(lang)
+
+    return Document(
+        source_path=str(path.resolve()),
+        source_type="code",
+        title=path.name,
+        content=content,
+        metadata=metadata,
+    )
+
+
+def collect_documents(
+    root: Path,
+    extra_metadata: dict | None = None,
+) -> Generator[Document, None, None]:
+    """Recursively collect documents from a directory."""
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+
+        if config.should_skip_path(path):
+            continue
+
+        if path.suffix not in config.all_extensions:
+            continue
+
+        try:
+            if path.suffix in config.markdown_extensions:
+                yield parse_markdown(path, extra_metadata)
+            elif path.suffix in config.code_extensions:
+                yield parse_code(path, extra_metadata)
+        except Exception as e:
+            print(f"Error parsing {path}: {e}", file=sys.stderr)
+
+
+def create_chunks(doc: Document) -> list[Chunk]:
+    """
+    Create contextual chunks from a document.
+
+    Each chunk includes:
+    - content: original text (for display)
+    - embedding_text: contextualized text (for embedding)
+    """
+    chunks = []
+
+    # For code files, extract structural context once
+    code_context = None
+    if doc.source_type == "code":
+        ext = Path(doc.source_path).suffix
+        code_context = extract_code_context(doc.content, ext)
+
+    # Chunk by sections if available, otherwise whole document
+    if doc.sections:
+        chunk_index = 0
+        for section_header, section_content in doc.sections:
+            for _, section_chunk in chunk_text_generator(section_content):
+                embedding_text = build_embedding_context(
+                    chunk_text=section_chunk,
+                    doc_title=doc.title,
+                    source_path=doc.source_path,
+                    source_type=doc.source_type,
+                    section_header=section_header,
+                    metadata=doc.metadata,
+                    code_context=code_context,
+                )
+
+                chunks.append(
+                    Chunk(
+                        content=section_chunk,
+                        embedding_text=embedding_text,
+                        chunk_index=chunk_index,
+                        token_count=len(section_chunk) // config.chars_per_token,
+                        metadata={"section": section_header} if section_header else {},
+                    )
+                )
+                chunk_index += 1
+    else:
+        for chunk_index, chunk_content in chunk_text(doc.content):
+            embedding_text = build_embedding_context(
+                chunk_text=chunk_content,
+                doc_title=doc.title,
+                source_path=doc.source_path,
+                source_type=doc.source_type,
+                metadata=doc.metadata,
+                code_context=code_context,
+            )
+
+            chunks.append(
+                Chunk(
+                    content=chunk_content,
+                    embedding_text=embedding_text,
+                    chunk_index=chunk_index,
+                    token_count=len(chunk_content) // config.chars_per_token,
+                )
+            )
+
+    return chunks
+
+
+# Alias for the generator to avoid name collision
+chunk_text_generator = chunk_text
+
+
+class Ingester:
+    """Handles document ingestion into pgvector."""
+
+    def __init__(self, db_url: str, use_modal: bool = True):
+        self.db_url = db_url
+        self.use_modal = use_modal
+        self._embedder = None
+
+    @property
+    def embedder(self):
+        """Lazy-load Modal embedder."""
+        if self._embedder is None:
+            if self.use_modal:
+                import modal
+
+                self._embedder = modal.Cls.from_name("knowledge-embedder", "Embedder")()
+            else:
+                # Fall back to local embedding
+                from local_embedder import embed_document
+
+                class LocalEmbedder:
+                    def embed_batch(self, texts):
+                        return [embed_document(t) for t in texts]
+
+                self._embedder = LocalEmbedder()
+        return self._embedder
+
+    def ingest_documents(self, documents: list[Document], batch_size: int = 50):
+        """
+        Ingest documents into the database.
+
+        1. Check for existing documents (by hash)
+        2. Create contextual chunks
+        3. Generate embeddings via Modal (or local)
+        4. Store in pgvector
+        """
+        with psycopg.connect(self.db_url, row_factory=dict_row) as conn:
+            register_vector(conn)
+            for doc in documents:
+                doc_hash = content_hash(doc.content)
+
+                # Check if document exists and unchanged
+                existing = conn.execute(
+                    "SELECT id FROM documents WHERE content_hash = %s", (doc_hash,)
+                ).fetchone()
+
+                if existing:
+                    print(f"Skipping (unchanged): {doc.source_path}")
+                    continue
+
+                # Check if same path exists with different hash (updated file)
+                old_doc = conn.execute(
+                    "SELECT id FROM documents WHERE source_path = %s", (doc.source_path,)
+                ).fetchone()
+
+                if old_doc:
+                    print(f"Updating: {doc.source_path}")
+                    conn.execute("DELETE FROM documents WHERE id = %s", (old_doc["id"],))
+                else:
+                    print(f"Ingesting: {doc.source_path}")
+
+                # Insert document
+                doc_id = conn.execute(
+                    """
+                    INSERT INTO documents (source_path, source_type, title, content, metadata, content_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        doc.source_path,
+                        doc.source_type,
+                        doc.title,
+                        doc.content,
+                        psycopg.types.json.Json(doc.metadata.to_dict()),
+                        doc_hash,
+                    ),
+                ).fetchone()["id"]
+
+                # Create chunks
+                chunks = create_chunks(doc)
+
+                if not chunks:
+                    conn.commit()
+                    continue
+
+                # Generate embeddings (batch to avoid OOM on GPU)
+                embedding_texts = [c.embedding_text for c in chunks]
+                embed_batch_size = 100  # Max texts per GPU call
+
+                print(f"  Generating embeddings for {len(chunks)} chunks...")
+                if self.use_modal:
+                    embeddings = []
+                    for i in range(0, len(embedding_texts), embed_batch_size):
+                        batch = embedding_texts[i : i + embed_batch_size]
+                        embeddings.extend(self.embedder.embed_batch.remote(batch))
+                else:
+                    embeddings = self.embedder.embed_batch(embedding_texts)
+
+                # Insert chunks with embeddings
+                for chunk, embedding in zip(chunks, embeddings):
+                    conn.execute(
+                        """
+                        INSERT INTO chunks 
+                            (document_id, chunk_index, content, embedding_text, embedding, token_count, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            doc_id,
+                            chunk.chunk_index,
+                            chunk.content,
+                            chunk.embedding_text,
+                            embedding,
+                            chunk.token_count,
+                            psycopg.types.json.Json(chunk.metadata),
+                        ),
+                    )
+
+                conn.commit()
+                print(f"  → {len(chunks)} chunks indexed")
+
+    def delete_document(self, source_path: str):
+        """Remove a document and its chunks."""
+        with psycopg.connect(self.db_url) as conn:
+            result = conn.execute(
+                "DELETE FROM documents WHERE source_path = %s RETURNING id",
+                (source_path,),
+            ).fetchone()
+            conn.commit()
+            return result is not None
+
+
+def main():
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Ingest documents into knowledge base",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python ingest.py ~/notes
+    python ingest.py ~/projects/myapp --metadata '{"project": "myapp"}'
+    python ingest.py document.md --local  # Use CPU embedding
+        """,
+    )
+    parser.add_argument("paths", nargs="+", type=Path, help="Files or directories to ingest")
+    parser.add_argument(
+        "--metadata",
+        type=json.loads,
+        default={},
+        help="JSON metadata to attach (e.g., '{\"project\": \"myapp\"}')",
+    )
+    parser.add_argument(
+        "--db-url",
+        default=config.db_url,
+        help="Database URL",
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Use local CPU embedding instead of Modal",
+    )
+
+    args = parser.parse_args()
+
+    ingester = Ingester(args.db_url, use_modal=not args.local)
+
+    # Collect documents
+    documents = []
+    for path in args.paths:
+        path = path.resolve()
+        if path.is_dir():
+            documents.extend(collect_documents(path, args.metadata))
+        elif path.is_file():
+            if path.suffix in config.markdown_extensions:
+                documents.append(parse_markdown(path, args.metadata))
+            elif path.suffix in config.code_extensions:
+                documents.append(parse_code(path, args.metadata))
+            else:
+                print(f"Skipping unsupported file: {path}", file=sys.stderr)
+
+    if not documents:
+        print("No documents found to ingest")
+        return
+
+    print(f"Found {len(documents)} documents to process")
+    ingester.ingest_documents(documents)
+    print("Done!")
+
+
+if __name__ == "__main__":
+    main()
