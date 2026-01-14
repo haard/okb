@@ -17,7 +17,7 @@ from .config import config, get_config_dir, get_config_path, get_default_config_
 
 
 @click.group()
-@click.version_option()
+@click.version_option(package_name="local-kb")
 def main():
     """Local Knowledge Base - semantic search for personal documents."""
     pass
@@ -317,7 +317,7 @@ def ingest(paths: tuple[str, ...], metadata: str, local: bool):
         if path.is_dir():
             documents.extend(collect_documents(path, extra_metadata))
         elif path.is_file():
-            if path.suffix in config.markdown_extensions:
+            if path.suffix in config.document_extensions:
                 documents.append(parse_markdown(path, extra_metadata))
             elif path.suffix in config.code_extensions:
                 documents.append(parse_code(path, extra_metadata))

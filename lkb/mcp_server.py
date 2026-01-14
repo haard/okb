@@ -20,7 +20,10 @@ Configure in Claude Code (~/.claude.json or similar):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
@@ -35,7 +38,7 @@ from mcp.types import (
 )
 
 from .config import config
-from .local_embedder import embed_query, warmup
+from .local_embedder import embed_document, embed_query, warmup
 
 
 class KnowledgeBase:
@@ -211,6 +214,118 @@ class KnowledgeBase:
         ).fetchall()
         return [dict(r) for r in results]
 
+    def save_knowledge(
+        self,
+        title: str,
+        content: str,
+        tags: list[str] | None = None,
+        project: str | None = None,
+    ) -> dict:
+        """
+        Save a piece of knowledge directly from Claude.
+
+        Creates a virtual document (not file-backed) with embedding.
+        Returns the saved document info.
+        """
+        conn = self.get_connection()
+
+        # Generate unique source path for Claude-generated content
+        knowledge_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        source_path = f"claude://knowledge/{timestamp}-{knowledge_id}"
+
+        # Build metadata
+        metadata = {}
+        if tags:
+            metadata["tags"] = tags
+        if project:
+            metadata["project"] = project
+        metadata["source"] = "claude"
+
+        # Content hash for deduplication
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+        # Check for duplicate content
+        existing = conn.execute(
+            "SELECT source_path, title FROM documents WHERE content_hash = %s",
+            (content_hash,),
+        ).fetchone()
+        if existing:
+            return {
+                "status": "duplicate",
+                "existing_path": existing["source_path"],
+                "existing_title": existing["title"],
+            }
+
+        # Build contextual embedding text
+        embedding_parts = [f"Document: {title}"]
+        if project:
+            embedding_parts.append(f"Project: {project}")
+        if tags:
+            embedding_parts.append(f"Topics: {', '.join(tags)}")
+        embedding_parts.append(f"Content: {content}")
+        embedding_text = "\n".join(embedding_parts)
+
+        # Generate embedding
+        embedding = embed_document(embedding_text)
+
+        # Insert document
+        doc_id = conn.execute(
+            """
+            INSERT INTO documents (source_path, source_type, title, content, metadata, content_hash)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                source_path,
+                "claude-note",
+                title,
+                content,
+                psycopg.types.json.Json(metadata),
+                content_hash,
+            ),
+        ).fetchone()["id"]
+
+        # Insert single chunk
+        token_count = len(content) // 4  # Approximate
+        conn.execute(
+            """
+            INSERT INTO chunks (document_id, chunk_index, content, embedding_text, embedding, token_count, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                doc_id,
+                0,
+                content,
+                embedding_text,
+                embedding,
+                token_count,
+                psycopg.types.json.Json({}),
+            ),
+        )
+
+        conn.commit()
+
+        return {
+            "status": "saved",
+            "source_path": source_path,
+            "title": title,
+            "token_count": token_count,
+        }
+
+    def delete_knowledge(self, source_path: str) -> bool:
+        """Delete a Claude-saved knowledge entry by source path."""
+        if not source_path.startswith("claude://"):
+            return False
+
+        conn = self.get_connection()
+        result = conn.execute(
+            "DELETE FROM documents WHERE source_path = %s RETURNING id",
+            (source_path,),
+        ).fetchone()
+        conn.commit()
+        return result is not None
+
 
 # Initialize server and knowledge base
 server = Server("knowledge-base")
@@ -356,6 +471,55 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="save_knowledge",
+            description=(
+                "Save a piece of knowledge to the knowledge base for future reference. "
+                "Use this to remember solutions, patterns, debugging tips, architectural decisions, "
+                "or any useful information discovered during this conversation. "
+                "The knowledge will be searchable in future sessions."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short descriptive title for this knowledge",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The knowledge content to save",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Categorization tags (e.g., ['python', 'debugging', 'django'])",
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Associated project name (optional)",
+                    },
+                },
+                "required": ["title", "content"],
+            },
+        ),
+        Tool(
+            name="delete_knowledge",
+            description=(
+                "Delete a previously saved knowledge entry by its source path. "
+                "Only works for Claude-saved entries (claude:// paths)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "The source path of the knowledge entry to delete",
+                    },
+                },
+                "required": ["source_path"],
+            },
+        ),
     ]
 
 
@@ -473,6 +637,55 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 output.append(f"- **{d['title']}**{project_str} ({d['source_type']})")
                 output.append(f"  `{d['source_path']}`")
             return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
+
+        elif name == "save_knowledge":
+            result = kb.save_knowledge(
+                title=arguments["title"],
+                content=arguments["content"],
+                tags=arguments.get("tags"),
+                project=arguments.get("project"),
+            )
+            if result["status"] == "duplicate":
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=(
+                                f"Duplicate content already exists:\n"
+                                f"- Title: {result['existing_title']}\n"
+                                f"- Path: `{result['existing_path']}`"
+                            ),
+                        )
+                    ]
+                )
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Knowledge saved successfully:\n"
+                            f"- Title: {result['title']}\n"
+                            f"- Path: `{result['source_path']}`\n"
+                            f"- Tokens: ~{result['token_count']}"
+                        ),
+                    )
+                ]
+            )
+
+        elif name == "delete_knowledge":
+            deleted = kb.delete_knowledge(arguments["source_path"])
+            if deleted:
+                return CallToolResult(
+                    content=[TextContent(type="text", text="Knowledge entry deleted.")]
+                )
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text="Could not delete. Entry not found or not a Claude-saved entry.",
+                    )
+                ]
+            )
 
         else:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])

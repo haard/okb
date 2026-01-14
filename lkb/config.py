@@ -55,6 +55,22 @@ DEFAULTS = {
         "max_limit": 20,
         "min_similarity": 0.3,
     },
+    "extensions": {
+        "documents": [".md", ".txt", ".markdown", ".org"],
+        "code": [
+            ".py", ".rb", ".js", ".ts", ".jsx", ".tsx",
+            ".sql", ".sh", ".bash", ".fish",
+            ".yaml", ".yml", ".toml", ".json",
+            ".html", ".css", ".scss",
+            ".go", ".rs", ".java", ".kt", ".c", ".cpp", ".h",
+        ],
+        "skip_directories": [
+            ".git", ".hg", ".svn", "vault",
+            "node_modules", "__pycache__", ".venv", "venv",
+            ".mypy_cache", ".pytest_cache", ".ruff_cache",
+            "dist", "build", ".next", ".nuxt",
+        ],
+    },
 }
 
 
@@ -85,50 +101,10 @@ class Config:
     max_limit: int = 20
     min_similarity: float = 0.3
 
-    # File types (not configurable via file for now)
-    markdown_extensions: frozenset[str] = frozenset({".md", ".txt", ".markdown", ".org"})
-    code_extensions: frozenset[str] = frozenset(
-        {
-            ".py",
-            ".js",
-            ".ts",
-            ".jsx",
-            ".tsx",
-            ".sql",
-            ".sh",
-            ".bash",
-            ".yaml",
-            ".yml",
-            ".toml",
-            ".html",
-            ".css",
-            ".scss",
-            ".go",
-            ".rs",
-            ".java",
-            ".kt",
-            ".fish",
-        }
-    )
-    skip_directories: frozenset[str] = frozenset(
-        {
-            ".git",
-            ".hg",
-            ".svn",
-            "vault",
-            "node_modules",
-            "__pycache__",
-            ".venv",
-            "venv",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            "dist",
-            "build",
-            ".next",
-            ".nuxt",
-        }
-    )
+    # File types (loaded from config in __post_init__)
+    document_extensions: frozenset[str] = field(default_factory=frozenset)
+    code_extensions: frozenset[str] = field(default_factory=frozenset)
+    skip_directories: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self):
         """Load configuration from file and environment."""
@@ -183,9 +159,21 @@ class Config:
         self.max_limit = search_cfg.get("max_limit", DEFAULTS["search"]["max_limit"])
         self.min_similarity = search_cfg.get("min_similarity", DEFAULTS["search"]["min_similarity"])
 
+        # Extension settings
+        ext_cfg = file_config.get("extensions", {})
+        self.document_extensions = frozenset(
+            ext_cfg.get("documents", DEFAULTS["extensions"]["documents"])
+        )
+        self.code_extensions = frozenset(
+            ext_cfg.get("code", DEFAULTS["extensions"]["code"])
+        )
+        self.skip_directories = frozenset(
+            ext_cfg.get("skip_directories", DEFAULTS["extensions"]["skip_directories"])
+        )
+
     @property
     def all_extensions(self) -> frozenset[str]:
-        return self.markdown_extensions | self.code_extensions
+        return self.document_extensions | self.code_extensions
 
     def should_skip_path(self, path: Path) -> bool:
         """Check if a path should be skipped during collection."""
@@ -214,6 +202,11 @@ class Config:
                 "default_limit": self.default_limit,
                 "max_limit": self.max_limit,
                 "min_similarity": self.min_similarity,
+            },
+            "extensions": {
+                "documents": sorted(self.document_extensions),
+                "code": sorted(self.code_extensions),
+                "skip_directories": sorted(self.skip_directories),
             },
         }
 

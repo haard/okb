@@ -1,14 +1,50 @@
-# Personal Knowledge Base for Claude Code
+# Local Knowledge Base (LKB)
 
-A local-first semantic search system using Modal for GPU embedding, pgvector for storage, and MCP for Claude Code integration.
+A local-first semantic search system for personal documents with Claude Code integration via MCP.
 
-## Key Features
+## Installation
 
-- **Local-first**: pgvector and MCP server run on your machine — zero cloud cost for daily use
-- **GPU burst via Modal**: On-demand embedding generation (~$0.02 per 1000 chunks)
-- **Contextual chunking**: Documents are chunked with title, project, section, and tag context for better retrieval
-- **Claude Code integration**: Semantic search directly from your terminal via MCP
-- **Hybrid search**: Combines semantic similarity with keyword matching
+```bash
+pip install local-kb
+```
+
+Or from source:
+```bash
+git clone https://github.com/yourusername/lkb
+cd lkb
+pip install -e .
+```
+
+## Quick Start
+
+```bash
+# 1. Start the database
+lkb db start
+
+# 2. (Optional) Deploy Modal embedder for faster batch ingestion
+lkb modal deploy
+
+# 3. Ingest your documents
+lkb ingest ~/notes ~/docs
+
+# 4. Configure Claude Code MCP (see below)
+```
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `lkb db start` | Start pgvector database container |
+| `lkb db stop` | Stop database container |
+| `lkb db status` | Show database status |
+| `lkb db destroy` | Remove container and volume (destructive) |
+| `lkb ingest <paths>` | Ingest documents into knowledge base |
+| `lkb ingest <paths> --local` | Ingest using CPU embedding (no Modal) |
+| `lkb serve` | Start MCP server (for Claude Code) |
+| `lkb watch <paths>` | Watch directories for changes |
+| `lkb config init` | Create default config file |
+| `lkb config show` | Show current configuration |
+| `lkb modal deploy` | Deploy GPU embedder to Modal |
 
 ## Architecture
 
@@ -41,33 +77,65 @@ A local-first semantic search system using Modal for GPU embedding, pgvector for
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## Configuration
 
+Configuration is loaded from `~/.config/lkb/config.yaml` (or `$XDG_CONFIG_HOME/lkb/config.yaml`).
+
+Create default config:
 ```bash
-# 1. Clone and enter directory
-cd knowledge-base
-
-# 2. Run setup (starts pgvector, installs dependencies)
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-
-# 3. Deploy Modal embedder (one-time)
-modal setup
-modal deploy modal_embedder.py
-
-# 4. Ingest your documents
-source .venv/bin/activate
-python ingest.py ~/notes ~/docs
-
-# 5. Configure Claude Code (see setup output for config)
-
-# 6. (Optional) Watch for changes
-python scripts/watch.py ~/notes
+lkb config init
 ```
+
+Example config:
+```yaml
+database_url: postgresql://knowledge:localdev@localhost:5433/knowledge_base
+docker:
+  port: 5433
+  container_name: lkb-pgvector
+  volume_name: lkb-pgvector-data
+  password: localdev
+chunking:
+  chunk_size: 512
+  chunk_overlap: 64
+```
+
+Environment variables override config file settings:
+- `KB_DATABASE_URL` - Database connection string
+- `LKB_DOCKER_PORT` - Docker port mapping
+- `LKB_CONTAINER_NAME` - Docker container name
+
+## Claude Code MCP Config
+
+Add to your Claude Code MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "lkb",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+## MCP Tools (Available in Claude Code)
+
+| Tool | Purpose |
+|------|---------|
+| `search_knowledge` | Semantic search with natural language queries |
+| `keyword_search` | Exact keyword/symbol matching |
+| `hybrid_search` | Combined semantic + keyword (RRF fusion) |
+| `get_document` | Retrieve full document by path |
+| `list_sources` | Show indexed document stats |
+| `list_projects` | List known projects |
+| `recent_documents` | Show recently indexed files |
+| `save_knowledge` | Save knowledge from Claude for future reference |
+| `delete_knowledge` | Delete a Claude-saved knowledge entry |
 
 ## Contextual Chunking
 
-The key insight: embedding "Use `select_related()` to avoid N+1 queries" alone loses context. The system automatically adds:
+Documents are chunked with context for better retrieval:
 
 ```
 Document: Django Performance Notes
@@ -76,18 +144,6 @@ Section: Query Optimization   ← extracted from markdown headers
 Topics: django, performance   ← from frontmatter tags
 Content: Use `select_related()` to avoid N+1 queries...
 ```
-
-This contextual text is what gets embedded. The original chunk is stored separately for display.
-
-### Context Sources
-
-| Source | How It's Used |
-|--------|---------------|
-| **Document title** | Always included |
-| **Project** | From frontmatter `project:` or inferred from path (`~/projects/{name}/...`) |
-| **Section headers** | Extracted from markdown `## Heading` structure |
-| **Tags** | From frontmatter `tags: [...]` |
-| **Code structure** | Classes and functions extracted for code files |
 
 ### Frontmatter Example
 
@@ -103,89 +159,6 @@ category: backend
 Use `select_related()` for foreign keys...
 ```
 
-## File Structure
-
-```
-knowledge-base/
-├── docker-compose.yml      # pgvector container
-├── init.sql                # Database schema
-├── pyproject.toml          # Python project config
-├── config.py               # Shared configuration
-├── modal_embedder.py       # Modal GPU embedding service
-├── local_embedder.py       # CPU embedding for queries
-├── ingest.py               # Document ingestion pipeline
-├── mcp_server.py           # MCP server for Claude Code
-└── scripts/
-    ├── setup.sh            # Initial setup
-    └── watch.py            # File watcher for auto-updates
-```
-
-## Usage
-
-### Ingesting Documents
-
-```bash
-# Ingest a directory
-python ingest.py ~/notes
-
-# Ingest with explicit project metadata
-python ingest.py ~/projects/myapp --metadata '{"project": "myapp"}'
-
-# Use local CPU embedding (slower, no Modal needed)
-python ingest.py ~/notes --local
-```
-
-### MCP Tools (Available in Claude Code)
-
-| Tool | Purpose |
-|------|---------|
-| `search_knowledge` | Semantic search with natural language queries |
-| `keyword_search` | Exact keyword/symbol matching |
-| `hybrid_search` | Combined semantic + keyword (RRF fusion) |
-| `get_document` | Retrieve full document by path |
-| `list_sources` | Show indexed document stats |
-| `list_projects` | List known projects |
-| `recent_documents` | Show recently indexed files |
-
-### Example Queries in Claude Code
-
-```
-> Search my notes for Django query optimization techniques
-
-> Find code related to authentication middleware
-
-> What do I have documented about PostgreSQL vacuum?
-
-> Show me recent documents in the student-app project
-```
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KB_DATABASE_URL` | `postgresql://knowledge:localdev@localhost:5433/knowledge_base` | Database connection |
-| `PGVECTOR_PASSWORD` | `localdev` | PostgreSQL password |
-
-### Claude Code MCP Config
-
-Add to `~/.claude.json` (or your Claude Code config location):
-
-```json
-{
-  "mcpServers": {
-    "knowledge-base": {
-      "command": "/path/to/knowledge-base/.venv/bin/python",
-      "args": ["/path/to/knowledge-base/mcp_server.py"],
-      "env": {
-        "KB_DATABASE_URL": "postgresql://knowledge:localdev@localhost:5433/knowledge_base"
-      }
-    }
-  }
-}
-```
-
 ## Cost Estimate
 
 | Component | Local | Cloud Alternative |
@@ -195,41 +168,18 @@ Add to `~/.claude.json` (or your Claude Code config location):
 | Modal embedding | ~$0.50-2/mo | N/A |
 | **Total** | **~$1-2/mo** | **~$20-35/mo** |
 
-Modal pricing: ~$0.000164/sec for T4 GPU
-
-## Scaling Notes
-
-| Scale | Chunks | RAM | Disk | Notes |
-|-------|--------|-----|------|-------|
-| Personal | <10k | 512 MB | 1 GB | Laptop-friendly |
-| Medium | <100k | 1 GB | 5 GB | Typical knowledge base |
-| Large | <1M | 2-4 GB | 20 GB | Extensive archives |
-
-The HNSW index in pgvector handles 100k+ chunks efficiently. For larger scales, consider:
-- Increasing `m` and `ef_construction` in index parameters
-- Using a dedicated PostgreSQL instance
-- Partitioning by project/source_type
-
 ## Development
 
 ```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
 # Run tests
 pytest
 
-# Lint
-ruff check .
-
-# Format
-ruff format .
+# Lint and format
+ruff check . && ruff format .
 ```
-
-## Future Enhancements
-
-- [ ] PDF support via PyMuPDF
-- [ ] Web page clipper
-- [ ] Incremental sync (track file mtimes)
-- [ ] Multi-user with authentication
-- [ ] Scheduled backups
 
 ## License
 
