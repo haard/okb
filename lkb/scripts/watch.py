@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from watchdog.observers import Observer
@@ -87,6 +88,9 @@ class KnowledgeHandler(FileSystemEventHandler):
 
         try:
             doc = parse_document(path)
+            # Capture file mtime for staleness tracking
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            doc.metadata.extra["file_modified_at"] = mtime.isoformat()
             self.ingester.ingest_documents([doc])
 
         except Exception as e:

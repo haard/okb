@@ -64,6 +64,50 @@ def _get_init_sql_path() -> Path:
         return Path(__file__).parent / "data" / "init.sql"
 
 
+def _wait_for_db_ready(timeout: int = 30) -> bool:
+    """Wait for database to be ready to accept connections."""
+    import time
+
+    click.echo("Waiting for database to be ready...", nl=False)
+    for _ in range(timeout):
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                config.docker_container_name,
+                "pg_isready",
+                "-U",
+                "knowledge",
+                "-d",
+                "knowledge_base",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            click.echo(" ready.")
+            return True
+        click.echo(".", nl=False)
+        time.sleep(1)
+    click.echo(" timeout!")
+    return False
+
+
+def _run_migrations_if_pending():
+    """Run pending migrations if any exist."""
+    from .migrate import get_pending, run_migrations
+
+    try:
+        pending = get_pending(config.db_url)
+        if pending:
+            click.echo(f"Applying {len(pending)} migration(s)...")
+            applied = run_migrations(config.db_url)
+            for m in applied:
+                click.echo(f"  ✓ {m}")
+    except Exception as e:
+        click.echo(f"Warning: Could not run migrations: {e}", err=True)
+
+
 @db.command()
 def start():
     """Start the pgvector database container."""
@@ -88,6 +132,8 @@ def start():
             click.echo(f"Error starting container: {result.stderr}", err=True)
             sys.exit(1)
         click.echo("Database started.")
+        _wait_for_db_ready()
+        _run_migrations_if_pending()
         return
 
     # Container doesn't exist, create it
@@ -138,6 +184,8 @@ def start():
     click.echo(f"  Container: {config.docker_container_name}")
     click.echo(f"  Port: {config.docker_port}")
     click.echo(f"  Volume: {config.docker_volume_name}")
+    _wait_for_db_ready()
+    _run_migrations_if_pending()
 
 
 @db.command()
@@ -205,8 +253,40 @@ def status():
         )
         if result.returncode == 0:
             click.echo("Database: ready")
+            # Show migration status
+            try:
+                from .migrate import get_applied, get_pending
+
+                applied = get_applied(config.db_url)
+                pending = get_pending(config.db_url)
+                click.echo(f"Migrations: {len(applied)} applied, {len(pending)} pending")
+                if pending:
+                    click.echo("  Run 'lkb db migrate' to apply pending migrations.")
+            except Exception as e:
+                click.echo(f"Migrations: error checking ({e})")
         else:
             click.echo("Database: not ready")
+
+
+@db.command()
+def migrate():
+    """Apply pending database migrations."""
+    from .migrate import get_pending, run_migrations
+
+    pending = get_pending(config.db_url)
+    if not pending:
+        click.echo("Database schema is up to date.")
+        return
+
+    click.echo(f"Applying {len(pending)} migration(s)...")
+    try:
+        applied = run_migrations(config.db_url)
+        for m in applied:
+            click.echo(f"  ✓ {m}")
+        click.echo("Done.")
+    except Exception as e:
+        click.echo(f"Error applying migrations: {e}", err=True)
+        sys.exit(1)
 
 
 @db.command()

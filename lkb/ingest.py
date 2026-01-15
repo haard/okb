@@ -18,6 +18,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
@@ -133,16 +134,19 @@ class DocumentMetadata:
     @classmethod
     def from_frontmatter(cls, frontmatter: dict) -> DocumentMetadata:
         """Create from YAML frontmatter."""
+        extra = {
+            k: v
+            for k, v in frontmatter.items()
+            if k not in {"tags", "project", "category", "status"}
+        }
+        if doc_date := extract_document_date(frontmatter):
+            extra["document_date"] = doc_date
         return cls(
             tags=frontmatter.get("tags", []),
             project=frontmatter.get("project"),
             category=frontmatter.get("category"),
             status=frontmatter.get("status"),
-            extra={
-                k: v
-                for k, v in frontmatter.items()
-                if k not in {"tags", "project", "category", "status"}
-            },
+            extra=extra,
         )
 
     def to_dict(self) -> dict:
@@ -187,6 +191,18 @@ class Chunk:
 def content_hash(content: str) -> str:
     """Generate hash for deduplication/change detection."""
     return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def extract_document_date(metadata: dict) -> str | None:
+    """Extract document date from frontmatter/metadata, trying common field names."""
+    date_fields = ["date", "created", "modified", "updated", "last_modified", "pubdate"]
+    for field_name in date_fields:
+        if value := metadata.get(field_name):
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+            if isinstance(value, str):
+                return value
+    return None
 
 
 def extract_frontmatter(content: str) -> tuple[dict, str]:
@@ -698,6 +714,10 @@ def collect_documents(
                     print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
                     continue
 
+            # Capture file mtime for staleness tracking
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            doc.metadata.extra["file_modified_at"] = mtime.isoformat()
+
             collected += 1
             yield doc
         except Exception as e:
@@ -822,6 +842,16 @@ class Ingester:
                 ).fetchone()
 
                 if existing:
+                    # Content unchanged - but update file_modified_at if present
+                    new_mtime = doc.metadata.extra.get("file_modified_at")
+                    if new_mtime:
+                        conn.execute(
+                            """UPDATE documents
+                               SET metadata = jsonb_set(metadata, '{file_modified_at}', to_jsonb(%s::text))
+                               WHERE id = %s""",
+                            (new_mtime, existing["id"]),
+                        )
+                        conn.commit()
                     print(f"Skipping (unchanged): {doc.source_path}")
                     continue
 

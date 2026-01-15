@@ -41,6 +41,50 @@ from .config import config
 from .local_embedder import embed_document, embed_query, warmup
 
 
+def get_document_date(metadata: dict) -> str | None:
+    """Get best available date: document_date > file_modified_at."""
+    return metadata.get("document_date") or metadata.get("file_modified_at")
+
+
+def format_relative_time(iso_timestamp: str) -> str:
+    """Format ISO timestamp as relative time (e.g., '3d ago')."""
+    try:
+        dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        if delta.days < 0:
+            return "future"
+        if delta.days > 365:
+            return f"{delta.days // 365}y ago"
+        if delta.days > 30:
+            return f"{delta.days // 30}mo ago"
+        if delta.days > 0:
+            return f"{delta.days}d ago"
+        if delta.seconds > 3600:
+            return f"{delta.seconds // 3600}h ago"
+        if delta.seconds > 60:
+            return f"{delta.seconds // 60}m ago"
+        return "just now"
+    except (ValueError, TypeError):
+        return ""
+
+
+def parse_since_filter(since: str) -> datetime | None:
+    """Parse since filter like '7d', '30d', '6mo' or ISO date."""
+    import re
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    match = re.match(r"^(\d+)(d|mo|y)$", since.lower())
+    if match:
+        value, unit = int(match.group(1)), match.group(2)
+        days = value * {"d": 1, "mo": 30, "y": 365}[unit]
+        return now - timedelta(days=days)
+    try:
+        return datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 class KnowledgeBase:
     """Knowledge base with semantic and keyword search."""
 
@@ -61,6 +105,7 @@ class KnowledgeBase:
         source_type: str | None = None,
         project: str | None = None,
         min_score: float = 0.25,
+        since: str | None = None,
     ) -> list[dict]:
         """
         Search for semantically similar chunks.
@@ -72,7 +117,7 @@ class KnowledgeBase:
 
         # Build query with optional filters
         sql = """
-            SELECT 
+            SELECT
                 c.content,
                 c.chunk_index,
                 c.metadata as chunk_metadata,
@@ -95,6 +140,15 @@ class KnowledgeBase:
             sql += " AND d.metadata->>'project' = %s"
             params.append(project)
 
+        if since:
+            since_dt = parse_since_filter(since)
+            if since_dt:
+                sql += """ AND COALESCE(
+                    (d.metadata->>'document_date')::timestamptz,
+                    (d.metadata->>'file_modified_at')::timestamptz
+                ) >= %s"""
+                params.append(since_dt)
+
         sql += " ORDER BY c.embedding <=> %s::vector LIMIT %s"
         params.extend([embedding, min(limit, config.max_limit)])
 
@@ -106,6 +160,7 @@ class KnowledgeBase:
         query: str,
         limit: int = 5,
         source_type: str | None = None,
+        since: str | None = None,
     ) -> list[dict]:
         """
         Full-text keyword search.
@@ -115,12 +170,13 @@ class KnowledgeBase:
         conn = self.get_connection()
 
         sql = """
-            SELECT 
+            SELECT
                 c.content,
                 c.chunk_index,
                 d.source_path,
                 d.source_type,
                 d.title,
+                d.metadata as doc_metadata,
                 ts_rank(to_tsvector('english', c.content), plainto_tsquery('english', %s)) as rank
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
@@ -131,6 +187,15 @@ class KnowledgeBase:
         if source_type:
             sql += " AND d.source_type = %s"
             params.append(source_type)
+
+        if since:
+            since_dt = parse_since_filter(since)
+            if since_dt:
+                sql += """ AND COALESCE(
+                    (d.metadata->>'document_date')::timestamptz,
+                    (d.metadata->>'file_modified_at')::timestamptz
+                ) >= %s"""
+                params.append(since_dt)
 
         sql += " ORDER BY rank DESC LIMIT %s"
         params.append(min(limit, config.max_limit))
@@ -144,6 +209,7 @@ class KnowledgeBase:
         limit: int = 5,
         source_type: str | None = None,
         semantic_weight: float = 0.7,
+        since: str | None = None,
     ) -> list[dict]:
         """
         Hybrid search combining semantic and keyword results.
@@ -151,8 +217,12 @@ class KnowledgeBase:
         Uses Reciprocal Rank Fusion (RRF) to merge results.
         """
         # Get both result sets
-        semantic_results = self.semantic_search(query, limit=limit * 2, source_type=source_type)
-        keyword_results = self.keyword_search(query, limit=limit * 2, source_type=source_type)
+        semantic_results = self.semantic_search(
+            query, limit=limit * 2, source_type=source_type, since=since
+        )
+        keyword_results = self.keyword_search(
+            query, limit=limit * 2, source_type=source_type, since=since
+        )
 
         # RRF scoring
         k = 60  # RRF constant
@@ -364,6 +434,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Filter by project name (optional)",
                     },
+                    "since": {
+                        "type": "string",
+                        "description": "Filter to documents modified since (ISO date or relative: '7d', '30d', '6mo')",
+                    },
                 },
                 "required": ["query"],
             },
@@ -392,6 +466,10 @@ async def list_tools() -> list[Tool]:
                         "enum": ["markdown", "code"],
                         "description": "Filter by source type (optional)",
                     },
+                    "since": {
+                        "type": "string",
+                        "description": "Filter to documents modified since (ISO date or relative: '7d', '30d', '6mo')",
+                    },
                 },
                 "required": ["query"],
             },
@@ -419,6 +497,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "enum": ["markdown", "code"],
                         "description": "Filter by source type (optional)",
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Filter to documents modified since (ISO date or relative: '7d', '30d', '6mo')",
                     },
                 },
                 "required": ["query"],
@@ -533,13 +615,19 @@ def format_search_results(results: list[dict], show_similarity: bool = True) -> 
         header = f"## {r['title']} ({r['source_type']})"
         source = f"**Source:** `{r['source_path']}`"
 
+        # Add document date if available
+        date_line = ""
+        if doc_meta := r.get("doc_metadata"):
+            if doc_date := get_document_date(doc_meta):
+                date_line = f"\n**Modified:** {format_relative_time(doc_date)}"
+
         if show_similarity and "similarity" in r:
             score = f"**Relevance:** {r['similarity']:.1%}"
-            output.append(f"{header}\n{source}\n{score}\n\n{r['content']}\n\n---")
+            output.append(f"{header}\n{source}\n{score}{date_line}\n\n{r['content']}\n\n---")
         elif "rank" in r:
-            output.append(f"{header}\n{source}\n\n{r['content']}\n\n---")
+            output.append(f"{header}\n{source}{date_line}\n\n{r['content']}\n\n---")
         else:
-            output.append(f"{header}\n{source}\n\n{r['content']}\n\n---")
+            output.append(f"{header}\n{source}{date_line}\n\n{r['content']}\n\n---")
 
     return "\n\n".join(output)
 
@@ -554,6 +642,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 limit=arguments.get("limit", 5),
                 source_type=arguments.get("source_type"),
                 project=arguments.get("project"),
+                since=arguments.get("since"),
             )
             return CallToolResult(
                 content=[TextContent(type="text", text=format_search_results(results))]
@@ -564,6 +653,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 query=arguments["query"],
                 limit=arguments.get("limit", 5),
                 source_type=arguments.get("source_type"),
+                since=arguments.get("since"),
             )
             return CallToolResult(
                 content=[
@@ -578,6 +668,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 query=arguments["query"],
                 limit=arguments.get("limit", 5),
                 source_type=arguments.get("source_type"),
+                since=arguments.get("since"),
             )
             return CallToolResult(
                 content=[
@@ -634,7 +725,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             for d in docs:
                 project = d["metadata"].get("project", "")
                 project_str = f" [{project}]" if project else ""
-                output.append(f"- **{d['title']}**{project_str} ({d['source_type']})")
+                date_str = ""
+                if doc_date := get_document_date(d["metadata"]):
+                    date_str = f" - {format_relative_time(doc_date)}"
+                output.append(f"- **{d['title']}**{project_str} ({d['source_type']}){date_str}")
                 output.append(f"  `{d['source_path']}`")
             return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
 
