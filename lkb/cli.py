@@ -18,9 +18,12 @@ from .config import config, get_config_dir, get_config_path, get_default_config_
 
 @click.group()
 @click.version_option(package_name="local-kb")
-def main():
+@click.option("--db", "database", default=None, help="Database to use")
+@click.pass_context
+def main(ctx, database):
     """Local Knowledge Base - semantic search for personal documents."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["database"] = database
 
 
 # =============================================================================
@@ -29,7 +32,8 @@ def main():
 
 
 @main.group()
-def db():
+@click.pass_context
+def db(ctx):
     """Manage the pgvector database container."""
     pass
 
@@ -93,19 +97,68 @@ def _wait_for_db_ready(timeout: int = 30) -> bool:
     return False
 
 
-def _run_migrations_if_pending():
-    """Run pending migrations if any exist."""
+def _run_migrations_for_db(db_cfg):
+    """Run pending migrations for a specific database."""
     from .migrate import get_pending, run_migrations
 
     try:
-        pending = get_pending(config.db_url)
+        pending = get_pending(db_cfg.url)
         if pending:
-            click.echo(f"Applying {len(pending)} migration(s)...")
-            applied = run_migrations(config.db_url)
+            click.echo(f"  {db_cfg.name}: applying {len(pending)} migration(s)...")
+            applied = run_migrations(db_cfg.url)
             for m in applied:
-                click.echo(f"  ✓ {m}")
+                click.echo(f"    ✓ {m}")
+        else:
+            click.echo(f"  {db_cfg.name}: up to date")
     except Exception as e:
-        click.echo(f"Warning: Could not run migrations: {e}", err=True)
+        click.echo(f"  {db_cfg.name}: error ({e})", err=True)
+
+
+def _run_migrations_all():
+    """Run pending migrations on all managed databases."""
+    managed_dbs = [db for db in config.databases.values() if db.managed]
+    if managed_dbs:
+        click.echo("Running migrations...")
+        for db_cfg in managed_dbs:
+            _run_migrations_for_db(db_cfg)
+
+
+def _ensure_databases_exist():
+    """Create databases in PostgreSQL container if they don't exist."""
+    import psycopg
+    from psycopg import sql
+
+    managed_dbs = [db for db in config.databases.values() if db.managed]
+    if not managed_dbs:
+        return
+
+    # Connect to postgres database (admin db) to create others
+    admin_url = (
+        f"postgresql://knowledge:{config.docker_password}@"
+        f"localhost:{config.docker_port}/postgres"
+    )
+
+    try:
+        with psycopg.connect(admin_url, autocommit=True) as conn:
+            # Get existing databases
+            result = conn.execute("SELECT datname FROM pg_database WHERE datistemplate = false")
+            existing = {row[0] for row in result.fetchall()}
+
+            for db_cfg in managed_dbs:
+                db_name = db_cfg.database_name
+                if db_name not in existing:
+                    click.echo(f"Creating database: {db_name}")
+                    conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
+
+                    # Enable pgvector extension on the new database
+                    new_db_url = (
+                        f"postgresql://knowledge:{config.docker_password}@"
+                        f"localhost:{config.docker_port}/{db_name}"
+                    )
+                    with psycopg.connect(new_db_url, autocommit=True) as new_conn:
+                        new_conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except Exception as e:
+        click.echo(f"Warning: Could not create databases: {e}", err=True)
 
 
 @db.command()
@@ -133,7 +186,8 @@ def start():
             sys.exit(1)
         click.echo("Database started.")
         _wait_for_db_ready()
-        _run_migrations_if_pending()
+        _ensure_databases_exist()
+        _run_migrations_all()
         return
 
     # Container doesn't exist, create it
@@ -159,7 +213,7 @@ def start():
         "--name",
         config.docker_container_name,
         "-e",
-        f"POSTGRES_USER=knowledge",
+        "POSTGRES_USER=knowledge",
         "-e",
         f"POSTGRES_PASSWORD={config.docker_password}",
         "-e",
@@ -185,7 +239,8 @@ def start():
     click.echo(f"  Port: {config.docker_port}")
     click.echo(f"  Volume: {config.docker_volume_name}")
     _wait_for_db_ready()
-    _run_migrations_if_pending()
+    _ensure_databases_exist()
+    _run_migrations_all()
 
 
 @db.command()
@@ -269,24 +324,26 @@ def status():
 
 
 @db.command()
-def migrate():
-    """Apply pending database migrations."""
-    from .migrate import get_pending, run_migrations
+@click.argument("name", required=False)
+def migrate(name):
+    """Apply pending database migrations.
 
-    pending = get_pending(config.db_url)
-    if not pending:
-        click.echo("Database schema is up to date.")
-        return
-
-    click.echo(f"Applying {len(pending)} migration(s)...")
-    try:
-        applied = run_migrations(config.db_url)
-        for m in applied:
-            click.echo(f"  ✓ {m}")
-        click.echo("Done.")
-    except Exception as e:
-        click.echo(f"Error applying migrations: {e}", err=True)
-        sys.exit(1)
+    If NAME is provided, migrate only that database.
+    Otherwise, migrate all configured databases.
+    """
+    if name:
+        # Migrate specific database
+        try:
+            db_cfg = config.get_database(name)
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        _run_migrations_for_db(db_cfg)
+    else:
+        # Migrate all databases
+        for db_cfg in config.databases.values():
+            _run_migrations_for_db(db_cfg)
+    click.echo("Done.")
 
 
 @db.command()
@@ -315,6 +372,19 @@ def destroy():
         capture_output=True,
     )
     click.echo(f"Removed volume '{config.docker_volume_name}'.")
+
+
+@db.command("list")
+def db_list():
+    """List all configured databases."""
+    click.echo("Configured databases:")
+    for name, db_cfg in config.databases.items():
+        markers = []
+        if db_cfg.default:
+            markers.append("default")
+        markers.append("managed" if db_cfg.managed else "external")
+        click.echo(f"  {name} [{', '.join(markers)}]")
+        click.echo(f"    URL: {db_cfg.url}")
 
 
 # =============================================================================
@@ -376,7 +446,9 @@ def config_path_cmd():
 @click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True))
 @click.option("--metadata", "-m", default="{}", help="JSON metadata to attach")
 @click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
-def ingest(paths: tuple[str, ...], metadata: str, local: bool):
+@click.option("--db", "database", default=None, help="Database to ingest into")
+@click.pass_context
+def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: str | None):
     """Ingest documents into the knowledge base."""
     import json as json_module
     from pathlib import Path
@@ -389,7 +461,10 @@ def ingest(paths: tuple[str, ...], metadata: str, local: bool):
         click.echo(f"Error parsing metadata JSON: {e}", err=True)
         sys.exit(1)
 
-    ingester = Ingester(config.db_url, use_modal=not local)
+    # Get database URL from --db option or context
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+    ingester = Ingester(db_cfg.url, use_modal=not local)
 
     documents = []
     for path_str in paths:
@@ -419,13 +494,18 @@ def ingest(paths: tuple[str, ...], metadata: str, local: bool):
 
 
 @main.command()
-def serve():
+@click.option("--db", "database", default=None, help="Database to serve")
+@click.pass_context
+def serve(ctx, database: str | None):
     """Start the MCP server for Claude Code integration."""
     import asyncio
 
     from .mcp_server import main as mcp_main
 
-    asyncio.run(mcp_main())
+    # Get database URL from --db option or context
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+    asyncio.run(mcp_main(db_cfg.url))
 
 
 # =============================================================================
@@ -437,12 +517,19 @@ def serve():
 @click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True))
 @click.option("--metadata", "-m", default="{}", help="JSON metadata to attach")
 @click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
-def watch(paths: tuple[str, ...], metadata: str, local: bool):
+@click.option("--db", "database", default=None, help="Database to watch for")
+@click.pass_context
+def watch(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: str | None):
     """Watch directories for changes and auto-ingest."""
     from .scripts.watch import main as watch_main
 
+    # Get database URL from --db option or context
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
     # Convert to the format watch.py expects
     sys.argv = ["lkb-watch"] + list(paths)
+    sys.argv.extend(["--db-url", db_cfg.url])
     if metadata != "{}":
         sys.argv.extend(["--metadata", metadata])
     if local:

@@ -88,13 +88,14 @@ def parse_since_filter(since: str) -> datetime | None:
 class KnowledgeBase:
     """Knowledge base with semantic and keyword search."""
 
-    def __init__(self):
+    def __init__(self, db_url: str):
+        self.db_url = db_url
         self._conn = None
 
     def get_connection(self):
         """Get or create database connection."""
         if self._conn is None or self._conn.closed:
-            self._conn = psycopg.connect(config.db_url, row_factory=dict_row)
+            self._conn = psycopg.connect(self.db_url, row_factory=dict_row)
             register_vector(self._conn)
         return self._conn
 
@@ -399,7 +400,7 @@ class KnowledgeBase:
 
 # Initialize server and knowledge base
 server = Server("knowledge-base")
-kb = KnowledgeBase()
+kb: KnowledgeBase | None = None
 
 
 @server.list_tools()
@@ -788,8 +789,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
         return CallToolResult(content=[TextContent(type="text", text=f"Error: {e!s}")])
 
 
-async def main():
+async def main(db_url: str | None = None):
     """Run the MCP server."""
+    global kb
+
+    # Initialize knowledge base with provided URL or default
+    if db_url is None:
+        db_url = config.db_url
+    kb = KnowledgeBase(db_url)
+
     # Pre-warm embedding model
     print("Warming up embedding model...", file=sys.stderr)
     warmup()

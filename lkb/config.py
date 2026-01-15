@@ -6,8 +6,25 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
+
+
+@dataclass
+class DatabaseConfig:
+    """Configuration for a single database."""
+
+    name: str
+    url: str
+    managed: bool = True  # Whether lkb manages this (Docker) or external
+    default: bool = False
+
+    @property
+    def database_name(self) -> str:
+        """Extract database name from URL."""
+        parsed = urlparse(self.url)
+        return parsed.path.lstrip("/") or self.name
 
 
 def get_config_dir() -> Path:
@@ -34,7 +51,13 @@ def load_config_file() -> dict[str, Any]:
 
 # Default configuration values
 DEFAULTS = {
-    "database_url": "postgresql://knowledge:localdev@localhost:5433/knowledge_base",
+    "databases": {
+        "default": {
+            "url": "postgresql://knowledge:localdev@localhost:5433/knowledge_base",
+            "default": True,
+            "managed": True,
+        },
+    },
     "docker": {
         "port": 5433,
         "container_name": "lkb-pgvector",
@@ -100,8 +123,9 @@ DEFAULTS = {
 class Config:
     """Knowledge base configuration."""
 
-    # Database
-    db_url: str = field(default="")
+    # Multiple databases support
+    databases: dict[str, DatabaseConfig] = field(default_factory=dict)
+    default_database: str | None = None
 
     # Docker
     docker_port: int = 5433
@@ -138,12 +162,35 @@ class Config:
         """Load configuration from file and environment."""
         file_config = load_config_file()
 
-        # Database URL: env > file > default
-        if not self.db_url:
-            self.db_url = os.environ.get(
+        # Load databases: new multi-db format or legacy single database_url
+        if "databases" in file_config:
+            for name, db_cfg in file_config["databases"].items():
+                self.databases[name] = DatabaseConfig(
+                    name=name,
+                    url=db_cfg["url"],
+                    managed=db_cfg.get("managed", True),
+                    default=db_cfg.get("default", False),
+                )
+                if db_cfg.get("default"):
+                    self.default_database = name
+            # If no default was marked, use first database
+            if not self.default_database and self.databases:
+                first_name = next(iter(self.databases))
+                self.databases[first_name].default = True
+                self.default_database = first_name
+        else:
+            # Legacy: single database_url (env > file > default)
+            legacy_url = os.environ.get(
                 "KB_DATABASE_URL",
-                file_config.get("database_url", DEFAULTS["database_url"]),
+                file_config.get("database_url", DEFAULTS["databases"]["default"]["url"]),
             )
+            self.databases["default"] = DatabaseConfig(
+                name="default",
+                url=legacy_url,
+                managed=True,
+                default=True,
+            )
+            self.default_database = "default"
 
         # Docker settings
         docker_cfg = file_config.get("docker", {})
@@ -214,6 +261,21 @@ class Config:
             "max_line_length_for_minified", DEFAULTS["security"]["max_line_length_for_minified"]
         )
 
+    def get_database(self, name: str | None = None) -> DatabaseConfig:
+        """Get database config by name, or default if None."""
+        if name is None:
+            name = self.default_database
+        if name is None:
+            raise ValueError("No database specified and no default configured")
+        if name not in self.databases:
+            raise ValueError(f"Unknown database: {name}. Available: {list(self.databases.keys())}")
+        return self.databases[name]
+
+    @property
+    def db_url(self) -> str:
+        """Backward compat: return default database URL."""
+        return self.get_database().url
+
     @property
     def all_extensions(self) -> frozenset[str]:
         return self.document_extensions | self.code_extensions
@@ -224,8 +286,15 @@ class Config:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for display."""
+        databases_dict = {}
+        for name, db_cfg in self.databases.items():
+            databases_dict[name] = {
+                "url": db_cfg.url,
+                "managed": db_cfg.managed,
+                "default": db_cfg.default,
+            }
         return {
-            "database_url": self.db_url,
+            "databases": databases_dict,
             "docker": {
                 "port": self.docker_port,
                 "container_name": self.docker_container_name,
