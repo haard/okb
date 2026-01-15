@@ -1,7 +1,8 @@
 [project]
 name = "local-kb"
 version = "0.1.0"
-description = "Personal knowledge base with semantic search for Claude Code"
+description = "Personal knowledge base with semantic search for LLMs"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.1.0",
@@ -12,11 +13,10 @@ dependencies = [
     "watchdog>=3.0.0",
     "einops>=0.7.0",
     "click>=8.0.0",
-    "modal>=1.3.0.post1",
+    "modal>=1.0.0",
 ]
 
 [project.optional-dependencies]
-modal = ["modal>=0.60.0"]
 pdf = ["pymupdf>=1.23.0"]
 dev = [
     "pytest>=7.0.0",
@@ -27,16 +27,11 @@ dev = [
 lkb = "lkb.cli:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
-[tool.hatch.build.targets.wheel]
-packages = ["lkb"]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "lkb/**",
-]
+[tool.poetry]
+packages = [{include = "lkb"}]
 
 [tool.ruff]
 line-length = 100
@@ -44,8 +39,3 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-
-[dependency-groups]
-dev = [
-    "ruff>=0.14.11",
-]

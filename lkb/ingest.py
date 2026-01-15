@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import re
@@ -26,6 +27,97 @@ from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
 from .config import config
+
+
+def read_text_with_fallback(path: Path, encodings: tuple[str, ...] = ("utf-8", "windows-1252", "latin-1")) -> str:
+    """Read text file trying multiple encodings in order."""
+    for encoding in encodings:
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    # Last resort: read with errors replaced
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def matches_pattern(filename: str, patterns: list[str]) -> str | None:
+    """Check if filename matches any pattern. Returns matched pattern or None."""
+    for pattern in patterns:
+        if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(filename.lower(), pattern.lower()):
+            return pattern
+    return None
+
+
+# Patterns for detecting secrets in content
+SECRET_PATTERNS = [
+    (re.compile(r"-----BEGIN [A-Z ]* PRIVATE KEY-----"), "private key"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS access key"),
+    (re.compile(r"ghp_[a-zA-Z0-9]{36}"), "GitHub personal access token"),
+    (re.compile(r"gho_[a-zA-Z0-9]{36}"), "GitHub OAuth token"),
+    (re.compile(r"sk-[a-zA-Z0-9]{48}"), "OpenAI API key"),
+    (re.compile(r"sk-ant-api[a-zA-Z0-9-]{80,}"), "Anthropic API key"),
+]
+
+
+def scan_content_for_secrets(content: str) -> str | None:
+    """Scan content for potential secrets. Returns description if found, None otherwise."""
+    # Only check first 10KB to avoid slow scans on large files
+    sample = content[:10240]
+    for pattern, description in SECRET_PATTERNS:
+        if pattern.search(sample):
+            return description
+    return None
+
+
+def is_minified(content: str, max_line_length: int = 1000) -> bool:
+    """Detect if content appears to be minified JS/CSS."""
+    lines = content.split("\n", 10)  # Only check first few lines
+    if not lines:
+        return False
+    # Check if any of the first lines is extremely long
+    for line in lines[:5]:
+        if len(line) > max_line_length:
+            # Also check it's not just a long string/comment - minified has lots of punctuation
+            if line.count(";") > 20 or line.count(",") > 50 or line.count("{") > 20:
+                return True
+    return False
+
+
+class FileSkipReason:
+    """Result of file skip check."""
+    def __init__(self, should_skip: bool, reason: str = "", is_security: bool = False):
+        self.should_skip = should_skip
+        self.reason = reason
+        self.is_security = is_security  # True for blocked (security), False for skipped (low-value)
+
+
+def check_file_skip(path: Path, content: str | None = None) -> FileSkipReason:
+    """
+    Check if a file should be skipped or blocked.
+
+    Returns FileSkipReason with details.
+    """
+    filename = path.name
+
+    # Check block patterns (security)
+    if matched := matches_pattern(filename, config.block_patterns):
+        return FileSkipReason(True, f"matches block pattern '{matched}'", is_security=True)
+
+    # Check skip patterns (low-value)
+    if matched := matches_pattern(filename, config.skip_patterns):
+        return FileSkipReason(True, f"matches skip pattern '{matched}'", is_security=False)
+
+    # Content-based checks (if content provided and scanning enabled)
+    if content is not None and config.scan_content:
+        # Check for secrets
+        if secret_type := scan_content_for_secrets(content):
+            return FileSkipReason(True, f"contains {secret_type}", is_security=True)
+
+        # Check for minified JS/CSS
+        if path.suffix in (".js", ".css") and is_minified(content, config.max_line_length_for_minified):
+            return FileSkipReason(True, "appears to be minified", is_security=False)
+
+    return FileSkipReason(False)
 
 
 @dataclass
@@ -399,7 +491,7 @@ def chunk_text(
 
 def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
     """Parse a markdown (.md) file into a Document."""
-    content = path.read_text(encoding="utf-8")
+    content = read_text_with_fallback(path)
 
     # Extract frontmatter
     frontmatter, body = extract_frontmatter(content)
@@ -433,7 +525,7 @@ def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
 
 def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
     """Parse an org-mode (.org) file into a Document."""
-    content = path.read_text(encoding="utf-8")
+    content = read_text_with_fallback(path)
 
     # Extract org metadata (#+KEY: value lines)
     org_meta, body = extract_org_metadata(content)
@@ -492,7 +584,7 @@ def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
 
 def parse_text(path: Path, extra_metadata: dict | None = None) -> Document:
     """Parse a plain text file into a Document (no special parsing)."""
-    content = path.read_text(encoding="utf-8")
+    content = read_text_with_fallback(path)
 
     metadata = DocumentMetadata()
     if extra_metadata:
@@ -514,7 +606,7 @@ def parse_text(path: Path, extra_metadata: dict | None = None) -> Document:
 
 def parse_code(path: Path, extra_metadata: dict | None = None) -> Document:
     """Parse a code file into a Document."""
-    content = path.read_text(encoding="utf-8")
+    content = read_text_with_fallback(path)
 
     metadata = DocumentMetadata()
     if extra_metadata:
@@ -566,20 +658,53 @@ def collect_documents(
     extra_metadata: dict | None = None,
 ) -> Generator[Document, None, None]:
     """Recursively collect documents from a directory."""
+    print(f"Scanning {root}...", file=sys.stderr, flush=True)
+    scanned = 0
+    collected = 0
+    skipped_dir = 0
+    skipped_ext = 0
+
     for path in root.rglob("*"):
         if not path.is_file():
             continue
 
+        scanned += 1
+        if scanned % 500 == 0:
+            print(f"  {scanned} files scanned, {collected} documents found...", file=sys.stderr, flush=True)
+
         if config.should_skip_path(path):
+            skipped_dir += 1
             continue
 
         if path.suffix not in config.all_extensions:
+            skipped_ext += 1
+            continue
+
+        # Check filename-based skip/block patterns first (before reading content)
+        skip_check = check_file_skip(path)
+        if skip_check.should_skip:
+            prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+            print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
             continue
 
         try:
-            yield parse_document(path, extra_metadata)
+            doc = parse_document(path, extra_metadata)
+
+            # Content-based checks (after parsing)
+            if config.scan_content:
+                skip_check = check_file_skip(path, doc.content)
+                if skip_check.should_skip:
+                    prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                    print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
+                    continue
+
+            collected += 1
+            yield doc
         except Exception as e:
             print(f"Error parsing {path}: {e}", file=sys.stderr)
+
+    if scanned >= 1000:
+        print(f"Scan complete: {scanned} files, {skipped_dir} in skipped dirs, {skipped_ext} wrong extension", file=sys.stderr, flush=True)
 
 
 def create_chunks(doc: Document) -> list[Chunk]:
@@ -711,11 +836,12 @@ class Ingester:
                 else:
                     print(f"Ingesting: {doc.source_path}")
 
-                # Insert document
-                doc_id = conn.execute(
+                # Insert document (ON CONFLICT handles duplicate content from different paths)
+                result = conn.execute(
                     """
                     INSERT INTO documents (source_path, source_type, title, content, metadata, content_hash)
                     VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (content_hash) DO NOTHING
                     RETURNING id
                     """,
                     (
@@ -726,7 +852,13 @@ class Ingester:
                         psycopg.types.json.Json(doc.metadata.to_dict()),
                         doc_hash,
                     ),
-                ).fetchone()["id"]
+                ).fetchone()
+
+                if result is None:
+                    print(f"  Skipping (duplicate content): {doc.source_path}")
+                    continue
+
+                doc_id = result["id"]
 
                 # Create chunks
                 chunks = create_chunks(doc)

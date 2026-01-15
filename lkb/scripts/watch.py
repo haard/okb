@@ -18,7 +18,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
 from ..config import config
-from ..ingest import Ingester, parse_document, content_hash
+from ..ingest import Ingester, parse_document, content_hash, check_file_skip, read_text_with_fallback
 
 
 class KnowledgeHandler(FileSystemEventHandler):
@@ -41,6 +41,11 @@ class KnowledgeHandler(FileSystemEventHandler):
         if path.suffix not in config.all_extensions:
             return False
 
+        # Check block/skip patterns (e.g., .env, *.min.js, temp files)
+        skip_check = check_file_skip(path)
+        if skip_check.should_skip:
+            return False
+
         return True
 
     def _debounced_update(self, path: Path):
@@ -58,13 +63,22 @@ class KnowledgeHandler(FileSystemEventHandler):
 
         # Check if content actually changed
         try:
-            content = path.read_text(encoding="utf-8")
+            content = read_text_with_fallback(path)
             new_hash = content_hash(content)
 
             if self._processed_hashes.get(path_str) == new_hash:
                 return  # No actual change
 
             self._processed_hashes[path_str] = new_hash
+
+            # Content-based checks (secrets, minified)
+            if config.scan_content:
+                skip_check = check_file_skip(path, content)
+                if skip_check.should_skip:
+                    prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                    print(f"[watch] {prefix}: {path} ({skip_check.reason})")
+                    return
+
         except Exception:
             return
 

@@ -71,6 +71,28 @@ DEFAULTS = {
             "dist", "build", ".next", ".nuxt",
         ],
     },
+    "security": {
+        # Sensitive files - blocked by default
+        "block_patterns": [
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+            "*.pem", "*.key", "*.p12", "*.pfx",
+            ".env", ".env.*",
+            "*credentials*", "*secret*",
+            ".netrc", ".pgpass", ".my.cnf",
+            "*_history", ".bash_history", ".zsh_history",
+        ],
+        # Low-value files - skipped for usefulness not security
+        "skip_patterns": [
+            "*.min.js", "*.min.css",
+            "*.bundle.js", "*.chunk.js",
+            "*.map",
+            "package-lock.json", "yarn.lock", "uv.lock", "Cargo.lock",
+            "*.pyc", "*.pyo",
+            "*.tmp", "*.tmp.*", ".#*", "*~",  # Temp/backup files
+        ],
+        "scan_content": True,
+        "max_line_length_for_minified": 1000,
+    },
 }
 
 
@@ -105,6 +127,12 @@ class Config:
     document_extensions: frozenset[str] = field(default_factory=frozenset)
     code_extensions: frozenset[str] = field(default_factory=frozenset)
     skip_directories: frozenset[str] = field(default_factory=frozenset)
+
+    # Security settings (loaded from config in __post_init__)
+    block_patterns: list[str] = field(default_factory=list)
+    skip_patterns: list[str] = field(default_factory=list)
+    scan_content: bool = True
+    max_line_length_for_minified: int = 1000
 
     def __post_init__(self):
         """Load configuration from file and environment."""
@@ -171,6 +199,21 @@ class Config:
             ext_cfg.get("skip_directories", DEFAULTS["extensions"]["skip_directories"])
         )
 
+        # Security settings
+        security_cfg = file_config.get("security", {})
+        self.block_patterns = security_cfg.get(
+            "block_patterns", DEFAULTS["security"]["block_patterns"]
+        )
+        self.skip_patterns = security_cfg.get(
+            "skip_patterns", DEFAULTS["security"]["skip_patterns"]
+        )
+        self.scan_content = security_cfg.get(
+            "scan_content", DEFAULTS["security"]["scan_content"]
+        )
+        self.max_line_length_for_minified = security_cfg.get(
+            "max_line_length_for_minified", DEFAULTS["security"]["max_line_length_for_minified"]
+        )
+
     @property
     def all_extensions(self) -> frozenset[str]:
         return self.document_extensions | self.code_extensions
@@ -207,6 +250,12 @@ class Config:
                 "documents": sorted(self.document_extensions),
                 "code": sorted(self.code_extensions),
                 "skip_directories": sorted(self.skip_directories),
+            },
+            "security": {
+                "block_patterns": self.block_patterns,
+                "skip_patterns": self.skip_patterns,
+                "scan_content": self.scan_content,
+                "max_line_length_for_minified": self.max_line_length_for_minified,
             },
         }
 
