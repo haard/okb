@@ -17,10 +17,10 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Generator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator
 
 import psycopg
 import yaml
@@ -655,8 +655,36 @@ def parse_code(path: Path, extra_metadata: dict | None = None) -> Document:
     )
 
 
-def parse_document(path: Path, extra_metadata: dict | None = None) -> Document:
-    """Route document to appropriate parser based on extension."""
+def is_text_file(path: Path) -> bool:
+    """Check if a file appears to be text (not binary)."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(8192)
+        # Check for null bytes (binary indicator)
+        if b"\x00" in chunk:
+            return False
+        # Try to decode as UTF-8
+        try:
+            chunk.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            # Try other common encodings
+            for encoding in ("windows-1252", "latin-1"):
+                try:
+                    chunk.decode(encoding)
+                    return True
+                except UnicodeDecodeError:
+                    continue
+            return False
+    except OSError:
+        return False
+
+
+def parse_document(path: Path, extra_metadata: dict | None = None, force: bool = False) -> Document:
+    """Route document to appropriate parser based on extension.
+
+    If force=True, parse unknown extensions as text/code (for explicitly provided files).
+    """
     if path.suffix == ".md":
         return parse_markdown(path, extra_metadata)
     elif path.suffix == ".org":
@@ -664,6 +692,9 @@ def parse_document(path: Path, extra_metadata: dict | None = None) -> Document:
     elif path.suffix in config.document_extensions:
         return parse_text(path, extra_metadata)
     elif path.suffix in config.code_extensions:
+        return parse_code(path, extra_metadata)
+    elif force:
+        # Unknown extension but explicitly requested - treat as code/config file
         return parse_code(path, extra_metadata)
     else:
         raise ValueError(f"Unsupported file type: {path.suffix}")
@@ -715,7 +746,7 @@ def collect_documents(
                     continue
 
             # Capture file mtime for staleness tracking
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
             doc.metadata.extra["file_modified_at"] = mtime.isoformat()
 
             collected += 1
@@ -984,10 +1015,21 @@ Examples:
         if path.is_dir():
             documents.extend(collect_documents(path, args.metadata))
         elif path.is_file():
+            # Check security patterns first
+            skip_check = check_file_skip(path)
+            if skip_check.should_skip:
+                prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
+                continue
+
+            # For explicitly provided files, try to parse even with unknown extension
             if path.suffix in config.all_extensions:
                 documents.append(parse_document(path, args.metadata))
+            elif is_text_file(path):
+                print(f"Parsing as text: {path}", file=sys.stderr)
+                documents.append(parse_document(path, args.metadata, force=True))
             else:
-                print(f"Skipping unsupported file: {path}", file=sys.stderr)
+                print(f"Skipping binary file: {path}", file=sys.stderr)
 
     if not documents:
         print("No documents found to ingest")

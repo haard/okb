@@ -453,7 +453,13 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
     import json as json_module
     from pathlib import Path
 
-    from .ingest import Ingester, collect_documents, parse_code, parse_markdown
+    from .ingest import (
+        Ingester,
+        check_file_skip,
+        collect_documents,
+        is_text_file,
+        parse_document,
+    )
 
     try:
         extra_metadata = json_module.loads(metadata)
@@ -472,12 +478,22 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
         if path.is_dir():
             documents.extend(collect_documents(path, extra_metadata))
         elif path.is_file():
-            if path.suffix in config.document_extensions:
-                documents.append(parse_markdown(path, extra_metadata))
-            elif path.suffix in config.code_extensions:
-                documents.append(parse_code(path, extra_metadata))
+            # Check security patterns first
+            skip_check = check_file_skip(path)
+            if skip_check.should_skip:
+                prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                click.echo(f"{prefix}: {path} ({skip_check.reason})", err=True)
+                continue
+
+            # For explicitly provided files, try to parse even with unknown extension
+            if path.suffix in config.all_extensions:
+                documents.append(parse_document(path, extra_metadata))
+            elif is_text_file(path):
+                # Unknown extension but appears to be text - parse as code/config
+                click.echo(f"Parsing as text: {path}")
+                documents.append(parse_document(path, extra_metadata, force=True))
             else:
-                click.echo(f"Skipping unsupported file: {path}", err=True)
+                click.echo(f"Skipping binary file: {path}", err=True)
 
     if not documents:
         click.echo("No documents found to ingest.")

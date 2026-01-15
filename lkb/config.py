@@ -92,6 +92,8 @@ DEFAULTS = {
             "node_modules", "__pycache__", ".venv", "venv",
             ".mypy_cache", ".pytest_cache", ".ruff_cache",
             "dist", "build", ".next", ".nuxt",
+            "lib", "libs", "vendor", "third_party", "third-party",
+            "external", "bower_components",
         ],
     },
     "security": {
