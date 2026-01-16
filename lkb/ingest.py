@@ -723,6 +723,179 @@ def parse_url(url: str, extra_metadata: dict | None = None) -> Document:
     )
 
 
+def parse_pdf_date(pdf_date: str | None) -> str | None:
+    """Parse PDF date format (D:YYYYMMDDHHmmSS+TZ) to ISO format."""
+    if not pdf_date:
+        return None
+    # Strip optional 'D:' prefix
+    if pdf_date.startswith("D:"):
+        pdf_date = pdf_date[2:]
+    try:
+        # Basic format: YYYYMMDDHHMMSS
+        if len(pdf_date) >= 14:
+            dt = datetime.strptime(pdf_date[:14], "%Y%m%d%H%M%S")
+            return dt.isoformat()
+        elif len(pdf_date) >= 8:
+            dt = datetime.strptime(pdf_date[:8], "%Y%m%d")
+            return dt.isoformat()
+    except ValueError:
+        pass
+    return None
+
+
+def parse_pdf(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Parse a PDF file into a Document using PyMuPDF."""
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        raise ImportError(
+            "pymupdf is required for PDF ingestion. Install with: pip install local-kb[pdf]"
+        )
+
+    doc = fitz.open(path)
+    metadata = DocumentMetadata()
+
+    # Extract PDF metadata
+    pdf_meta = doc.metadata
+    if pdf_meta:
+        if pdf_meta.get("title"):
+            metadata.extra["original_title"] = pdf_meta["title"]
+        if pdf_meta.get("author"):
+            metadata.extra["author"] = pdf_meta["author"]
+        if pdf_meta.get("subject"):
+            metadata.extra["subject"] = pdf_meta["subject"]
+        if pdf_meta.get("keywords"):
+            # Keywords often comma-separated
+            keywords = [k.strip() for k in pdf_meta["keywords"].split(",") if k.strip()]
+            metadata.tags.extend(keywords)
+        # Parse creation date
+        if doc_date := parse_pdf_date(pdf_meta.get("creationDate")):
+            metadata.extra["document_date"] = doc_date
+
+    # Merge extra metadata
+    if extra_metadata:
+        if "tags" in extra_metadata:
+            metadata.tags.extend(extra_metadata["tags"])
+        if "project" in extra_metadata:
+            metadata.project = extra_metadata["project"]
+        if "category" in extra_metadata:
+            metadata.category = extra_metadata["category"]
+
+    # Extract text page by page as sections
+    sections = []
+    full_text_parts = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        text = page.get_text().strip()
+        if text:
+            sections.append((f"Page {page_num + 1}", text))
+            full_text_parts.append(text)
+
+    doc.close()
+
+    # Skip if no text extracted (likely scanned image)
+    if not full_text_parts:
+        raise ValueError(f"No text extracted from {path.name} - may be a scanned image (needs OCR)")
+
+    # Determine title
+    title = pdf_meta.get("title") if pdf_meta else None
+    if not title:
+        title = path.stem
+
+    return Document(
+        source_path=str(path.resolve()),
+        source_type="pdf",
+        title=title,
+        content="\n\n".join(full_text_parts),
+        metadata=metadata,
+        sections=sections,
+    )
+
+
+def parse_docx(path: Path, extra_metadata: dict | None = None) -> Document:
+    """Parse a DOCX file into a Document using python-docx."""
+    try:
+        import docx
+    except ImportError:
+        raise ImportError(
+            "python-docx is required for DOCX ingestion. Install with: pip install local-kb[docx]"
+        )
+
+    doc = docx.Document(path)
+    metadata = DocumentMetadata()
+
+    # Extract core properties
+    core = doc.core_properties
+    if core:
+        if core.title:
+            metadata.extra["original_title"] = core.title
+        if core.author:
+            metadata.extra["author"] = core.author
+        if core.keywords:
+            # Keywords often comma or semicolon separated
+            for sep in [",", ";"]:
+                if sep in core.keywords:
+                    keywords = [k.strip() for k in core.keywords.split(sep) if k.strip()]
+                    metadata.tags.extend(keywords)
+                    break
+            else:
+                # Single keyword or space-separated
+                metadata.tags.extend(core.keywords.split())
+        # Get document date (prefer created, fall back to modified)
+        if core.created:
+            metadata.extra["document_date"] = core.created.isoformat()
+        elif core.modified:
+            metadata.extra["document_date"] = core.modified.isoformat()
+
+    # Merge extra metadata
+    if extra_metadata:
+        if "tags" in extra_metadata:
+            metadata.tags.extend(extra_metadata["tags"])
+        if "project" in extra_metadata:
+            metadata.project = extra_metadata["project"]
+        if "category" in extra_metadata:
+            metadata.category = extra_metadata["category"]
+
+    # Extract paragraphs with heading detection
+    sections = []
+    current_heading = None
+    current_content = []
+    full_text_parts = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+
+        full_text_parts.append(text)
+
+        # Check if paragraph is a heading
+        if para.style and para.style.name and para.style.name.startswith("Heading"):
+            # Save previous section
+            if current_content:
+                sections.append((current_heading, "\n\n".join(current_content)))
+                current_content = []
+            current_heading = text
+        else:
+            current_content.append(text)
+
+    # Don't forget the last section
+    if current_content:
+        sections.append((current_heading, "\n\n".join(current_content)))
+
+    # Determine title
+    title = core.title if core and core.title else path.stem
+
+    return Document(
+        source_path=str(path.resolve()),
+        source_type="docx",
+        title=title,
+        content="\n\n".join(full_text_parts),
+        metadata=metadata,
+        sections=sections,
+    )
+
+
 def is_text_file(path: Path) -> bool:
     """Check if a file appears to be text (not binary)."""
     try:
@@ -757,6 +930,10 @@ def parse_document(path: Path, extra_metadata: dict | None = None, force: bool =
         return parse_markdown(path, extra_metadata)
     elif path.suffix == ".org":
         return parse_org(path, extra_metadata)
+    elif path.suffix == ".pdf":
+        return parse_pdf(path, extra_metadata)
+    elif path.suffix == ".docx":
+        return parse_docx(path, extra_metadata)
     elif path.suffix in config.document_extensions:
         return parse_text(path, extra_metadata)
     elif path.suffix in config.code_extensions:
@@ -1091,7 +1268,8 @@ Examples:
                 continue
 
             # For explicitly provided files, try to parse even with unknown extension
-            if path.suffix in config.all_extensions:
+            # Always allow .pdf and .docx even if not in config (user may have old config)
+            if path.suffix in config.all_extensions or path.suffix in (".pdf", ".docx"):
                 documents.append(parse_document(path, args.metadata))
             elif is_text_file(path):
                 print(f"Parsing as text: {path}", file=sys.stderr)

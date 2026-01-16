@@ -79,7 +79,7 @@ DEFAULTS = {
         "min_similarity": 0.3,
     },
     "extensions": {
-        "documents": [".md", ".txt", ".markdown", ".org"],
+        "documents": [".md", ".txt", ".markdown", ".org", ".pdf", ".docx"],
         "code": [
             ".py", ".rb", ".js", ".ts", ".jsx", ".tsx",
             ".sql", ".sh", ".bash", ".fish",

@@ -497,8 +497,13 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
                 continue
 
             # For explicitly provided files, try to parse even with unknown extension
-            if path.suffix in config.all_extensions:
-                documents.append(parse_document(path, extra_metadata))
+            # Always allow .pdf and .docx even if not in config (user may have old config)
+            if path.suffix in config.all_extensions or path.suffix in (".pdf", ".docx"):
+                try:
+                    documents.append(parse_document(path, extra_metadata))
+                except ValueError as e:
+                    click.echo(f"Skipping: {e}", err=True)
+                    continue
             elif is_text_file(path):
                 # Unknown extension but appears to be text - parse as code/config
                 click.echo(f"Parsing as text: {path}")

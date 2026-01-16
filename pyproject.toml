@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf = ["pymupdf>=1.23.0"]
+docx = ["python-docx>=1.1.0"]
 web = ["trafilatura>=1.6.0"]
 dev = [
     "pytest>=7.0.0",
