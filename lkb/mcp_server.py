@@ -50,6 +50,9 @@ def format_relative_time(iso_timestamp: str) -> str:
     """Format ISO timestamp as relative time (e.g., '3d ago')."""
     try:
         dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
+        # Handle naive datetimes (date-only strings like '2020-11-10')
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         delta = datetime.now(timezone.utc) - dt
         if delta.days < 0:
             return "future"

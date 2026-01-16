@@ -443,13 +443,13 @@ def config_path_cmd():
 
 
 @main.command()
-@click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True))
+@click.argument("paths", nargs=-1, required=True)
 @click.option("--metadata", "-m", default="{}", help="JSON metadata to attach")
 @click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
 @click.option("--db", "database", default=None, help="Database to ingest into")
 @click.pass_context
 def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: str | None):
-    """Ingest documents into the knowledge base."""
+    """Ingest documents or URLs into the knowledge base."""
     import json as json_module
     from pathlib import Path
 
@@ -458,7 +458,9 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
         check_file_skip,
         collect_documents,
         is_text_file,
+        is_url,
         parse_document,
+        parse_url,
     )
 
     try:
@@ -474,6 +476,15 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
 
     documents = []
     for path_str in paths:
+        # Check if it's a URL first
+        if is_url(path_str):
+            click.echo(f"Fetching: {path_str}")
+            try:
+                documents.append(parse_url(path_str, extra_metadata))
+            except Exception as e:
+                click.echo(f"Error fetching URL: {e}", err=True)
+            continue
+
         path = Path(path_str).resolve()
         if path.is_dir():
             documents.extend(collect_documents(path, extra_metadata))
@@ -494,6 +505,8 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
                 documents.append(parse_document(path, extra_metadata, force=True))
             else:
                 click.echo(f"Skipping binary file: {path}", err=True)
+        else:
+            click.echo(f"Not found: {path_str}", err=True)
 
     if not documents:
         click.echo("No documents found to ingest.")

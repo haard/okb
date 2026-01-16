@@ -655,6 +655,74 @@ def parse_code(path: Path, extra_metadata: dict | None = None) -> Document:
     )
 
 
+def is_url(s: str) -> bool:
+    """Check if a string looks like a URL."""
+    return s.startswith(("http://", "https://"))
+
+
+def parse_url(url: str, extra_metadata: dict | None = None) -> Document:
+    """Fetch and parse content from a URL using trafilatura."""
+    try:
+        import trafilatura
+    except ImportError:
+        raise ImportError("trafilatura is required for URL ingestion. Install with: pip install local-kb[web]")
+
+    # Fetch and extract content
+    downloaded = trafilatura.fetch_url(url)
+    if downloaded is None:
+        raise ValueError(f"Failed to fetch URL: {url}")
+
+    # Extract text content and metadata
+    result = trafilatura.extract(
+        downloaded,
+        include_comments=False,
+        include_tables=True,
+        output_format="txt",
+    )
+    if result is None:
+        raise ValueError(f"Failed to extract content from URL: {url}")
+
+    # Get metadata separately
+    meta = trafilatura.extract_metadata(downloaded)
+
+    # Build document metadata
+    metadata = DocumentMetadata()
+    if extra_metadata:
+        metadata = DocumentMetadata(
+            tags=extra_metadata.get("tags", []),
+            project=extra_metadata.get("project"),
+            category=extra_metadata.get("category"),
+        )
+
+    # Add URL-specific metadata
+    if meta:
+        if meta.title:
+            metadata.extra["original_title"] = meta.title
+        if meta.author:
+            metadata.extra["author"] = meta.author
+        if meta.date:
+            metadata.extra["document_date"] = meta.date
+        if meta.sitename:
+            metadata.extra["site"] = meta.sitename
+        if meta.description:
+            metadata.extra["description"] = meta.description
+
+    # Use fetched timestamp
+    metadata.extra["fetched_at"] = datetime.now(UTC).isoformat()
+
+    # Determine title
+    title = meta.title if meta and meta.title else url
+
+    return Document(
+        source_path=url,
+        source_type="web",
+        title=title,
+        content=result,
+        metadata=metadata,
+        sections=extract_sections_markdown(result),  # trafilatura output has markdown-like headers
+    )
+
+
 def is_text_file(path: Path) -> bool:
     """Check if a file appears to be text (not binary)."""
     try:
