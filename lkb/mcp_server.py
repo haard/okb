@@ -21,21 +21,22 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    Tool,
-    TextContent,
     CallToolResult,
+    TextContent,
+    Tool,
 )
+from pgvector.psycopg import register_vector
+from psycopg.rows import dict_row
 
 from .config import config
 from .local_embedder import embed_document, embed_query, warmup
@@ -52,8 +53,8 @@ def format_relative_time(iso_timestamp: str) -> str:
         dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
         # Handle naive datetimes (date-only strings like '2020-11-10')
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - dt
+            dt = dt.replace(tzinfo=UTC)
+        delta = datetime.now(UTC) - dt
         if delta.days < 0:
             return "future"
         if delta.days > 365:
@@ -73,10 +74,9 @@ def format_relative_time(iso_timestamp: str) -> str:
 
 def parse_since_filter(since: str) -> datetime | None:
     """Parse since filter like '7d', '30d', '6mo' or ISO date."""
-    import re
     from datetime import timedelta
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     match = re.match(r"^(\d+)(d|mo|y)$", since.lower())
     if match:
         value, unit = int(match.group(1)), match.group(2)
@@ -86,6 +86,37 @@ def parse_since_filter(since: str) -> datetime | None:
         return datetime.fromisoformat(since.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def parse_date_range(date_str: str) -> tuple[datetime, datetime] | None:
+    """Parse date range like 'today', 'tomorrow', 'this_week', '2024-01-15', or ISO date."""
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+
+    if date_str.lower() == "today":
+        return (today_start, today_end)
+    elif date_str.lower() == "tomorrow":
+        return (today_end, today_end + timedelta(days=1))
+    elif date_str.lower() == "this_week":
+        # Monday to Sunday
+        days_since_monday = now.weekday()
+        week_start = today_start - timedelta(days=days_since_monday)
+        return (week_start, week_start + timedelta(days=7))
+    elif date_str.lower() == "next_week":
+        days_since_monday = now.weekday()
+        next_week_start = today_start + timedelta(days=7 - days_since_monday)
+        return (next_week_start, next_week_start + timedelta(days=7))
+    elif re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        # Single date: return that day
+        try:
+            dt = datetime.fromisoformat(date_str).replace(tzinfo=UTC)
+            return (dt, dt + timedelta(days=1))
+        except ValueError:
+            return None
+    return None
 
 
 class KnowledgeBase:
@@ -305,7 +336,7 @@ class KnowledgeBase:
 
         # Generate unique source path for Claude-generated content
         knowledge_id = str(uuid.uuid4())[:8]
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         source_path = f"claude://knowledge/{timestamp}-{knowledge_id}"
 
         # Build metadata
@@ -399,6 +430,82 @@ class KnowledgeBase:
         ).fetchone()
         conn.commit()
         return result is not None
+
+    def get_actionable_items(
+        self,
+        item_type: str | None = None,
+        status: str | None = None,
+        due_date: str | None = None,
+        event_date: str | None = None,
+        min_priority: int | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """
+        Query actionable items (tasks, events, emails) with structured filters.
+
+        Args:
+            item_type: Filter by source_type (e.g., 'todoist-task', 'gcal-event', 'gmail')
+            status: Filter by status ('pending', 'completed', etc.)
+            due_date: Filter tasks due on date ('today', 'tomorrow', 'this_week', 'YYYY-MM-DD')
+            event_date: Filter events on date ('today', 'tomorrow', 'this_week', 'YYYY-MM-DD')
+            min_priority: Filter items with priority <= this value (1=highest)
+            limit: Max results to return
+        """
+        conn = self.get_connection()
+
+        sql = """
+            SELECT
+                d.source_path,
+                d.source_type,
+                d.title,
+                d.content,
+                d.metadata,
+                d.due_date,
+                d.event_start,
+                d.event_end,
+                d.status,
+                d.priority
+            FROM documents d
+            WHERE 1=1
+        """
+        params: list[Any] = []
+
+        if item_type:
+            sql += " AND d.source_type = %s"
+            params.append(item_type)
+
+        if status:
+            sql += " AND d.status = %s"
+            params.append(status)
+
+        if due_date:
+            date_range = parse_date_range(due_date)
+            if date_range:
+                sql += " AND d.due_date >= %s AND d.due_date < %s"
+                params.extend(date_range)
+
+        if event_date:
+            date_range = parse_date_range(event_date)
+            if date_range:
+                # Event overlaps with date range
+                sql += " AND d.event_start < %s AND (d.event_end > %s OR d.event_end IS NULL)"
+                params.extend([date_range[1], date_range[0]])
+
+        if min_priority is not None:
+            sql += " AND d.priority IS NOT NULL AND d.priority <= %s"
+            params.append(min_priority)
+
+        # Order by: due_date/event_start (soonest first), then priority
+        sql += """
+            ORDER BY
+                COALESCE(d.due_date, d.event_start) ASC NULLS LAST,
+                d.priority ASC NULLS LAST
+            LIMIT %s
+        """
+        params.append(min(limit, config.max_limit))
+
+        results = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in results]
 
 
 # Initialize server and knowledge base
@@ -606,6 +713,56 @@ async def list_tools() -> list[Tool]:
                 "required": ["source_path"],
             },
         ),
+        Tool(
+            name="get_actionable_items",
+            description=(
+                "Query actionable items like tasks, calendar events, and emails "
+                "with structured filters. Use this for daily briefs, finding tasks due soon, "
+                "or checking today's schedule. Filters by status, due date, event date, priority."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "item_type": {
+                        "type": "string",
+                        "description": (
+                            "Filter by source type (e.g., 'todoist-task', 'gcal-event')"
+                        ),
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Filter by status ('pending', 'completed', 'cancelled')",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": (
+                            "Filter tasks by due date: 'today', 'tomorrow', 'this_week', "
+                            "'next_week', or 'YYYY-MM-DD'"
+                        ),
+                    },
+                    "event_date": {
+                        "type": "string",
+                        "description": (
+                            "Filter events by date: 'today', 'tomorrow', 'this_week', "
+                            "'next_week', or 'YYYY-MM-DD'"
+                        ),
+                    },
+                    "min_priority": {
+                        "type": "integer",
+                        "description": (
+                            "Filter by priority (1=highest). Returns items <= this value."
+                        ),
+                        "minimum": 1,
+                        "maximum": 5,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 20)",
+                        "default": 20,
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -632,6 +789,55 @@ def format_search_results(results: list[dict], show_similarity: bool = True) -> 
             output.append(f"{header}\n{source}{date_line}\n\n{r['content']}\n\n---")
         else:
             output.append(f"{header}\n{source}{date_line}\n\n{r['content']}\n\n---")
+
+    return "\n\n".join(output)
+
+
+def format_actionable_items(items: list[dict]) -> str:
+    """Format actionable items (tasks, events, emails) for display."""
+    if not items:
+        return "No actionable items found matching the criteria."
+
+    output = ["## Actionable Items\n"]
+
+    for item in items:
+        title = item.get("title") or "Untitled"
+        source_type = item.get("source_type", "unknown")
+        status = item.get("status")
+        priority = item.get("priority")
+
+        # Build header with status and priority indicators
+        status_icon = {"pending": "[ ]", "completed": "[x]", "cancelled": "[-]"}.get(
+            status or "", "[ ]"
+        )
+        priority_str = f" P{priority}" if priority else ""
+        header = f"{status_icon} **{title}**{priority_str} ({source_type})"
+
+        # Build date info
+        date_parts = []
+        if due := item.get("due_date"):
+            date_parts.append(f"Due: {format_relative_time(str(due))}")
+        if start := item.get("event_start"):
+            if end := item.get("event_end"):
+                date_parts.append(f"Event: {start} - {end}")
+            else:
+                date_parts.append(f"Event: {start}")
+        date_line = " | ".join(date_parts) if date_parts else ""
+
+        # Content preview (truncate if long)
+        content = item.get("content", "")
+        if len(content) > 200:
+            content = content[:200] + "..."
+
+        parts = [header]
+        if date_line:
+            parts.append(date_line)
+        if content:
+            parts.append(content)
+        parts.append(f"`{item.get('source_path', '')}`")
+        parts.append("---")
+
+        output.append("\n".join(parts))
 
     return "\n\n".join(output)
 
@@ -783,6 +989,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                         text="Could not delete. Entry not found or not a Claude-saved entry.",
                     )
                 ]
+            )
+
+        elif name == "get_actionable_items":
+            items = kb.get_actionable_items(
+                item_type=arguments.get("item_type"),
+                status=arguments.get("status"),
+                due_date=arguments.get("due_date"),
+                event_date=arguments.get("event_date"),
+                min_priority=arguments.get("min_priority"),
+                limit=arguments.get("limit", 20),
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=format_actionable_items(items))]
             )
 
         else:

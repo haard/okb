@@ -176,6 +176,13 @@ class Document:
     metadata: DocumentMetadata = field(default_factory=DocumentMetadata)
     sections: list[tuple[str, str]] = field(default_factory=list)  # (header, content)
 
+    # Structured fields for actionable items (tasks, events, emails)
+    due_date: datetime | None = None  # Task deadlines
+    event_start: datetime | None = None  # Calendar event start
+    event_end: datetime | None = None  # Calendar event end
+    status: str | None = None  # 'pending', 'completed', 'cancelled', etc.
+    priority: int | None = None  # 1-5 scale (1=highest)
+
 
 @dataclass
 class Chunk:
@@ -328,6 +335,196 @@ def extract_sections_org(content: str) -> list[tuple[str, str]]:
                 sections.append((current_header, clean_part.strip()))
 
     return sections
+
+
+# Org-mode TODO keywords (common defaults)
+ORG_TODO_KEYWORDS = {"TODO", "DONE", "WAITING", "CANCELLED", "NEXT", "SOMEDAY"}
+ORG_DONE_KEYWORDS = {"DONE", "CANCELLED"}
+
+
+@dataclass
+class OrgTodoItem:
+    """Represents a parsed org-mode TODO item."""
+
+    heading: str  # The heading text (without stars, keyword, priority, tags)
+    raw_heading: str  # Original heading line for source_path anchor
+    level: int  # Number of stars
+    keyword: str | None  # TODO, DONE, etc.
+    priority: str | None  # A, B, C
+    tags: list[str]
+    deadline: datetime | None
+    scheduled: datetime | None
+    closed: datetime | None
+    content: str  # Body text under this heading
+
+
+def parse_org_timestamp(ts: str) -> datetime | None:
+    """Parse org-mode timestamp like <2024-01-15 Mon> or [2024-01-15 Mon 10:30]."""
+    # Strip brackets
+    ts = ts.strip("<>[]")
+    # Try various formats
+    formats = [
+        "%Y-%m-%d %a %H:%M",  # <2024-01-15 Mon 10:30>
+        "%Y-%m-%d %a",  # <2024-01-15 Mon>
+        "%Y-%m-%d %H:%M",  # <2024-01-15 10:30>
+        "%Y-%m-%d",  # <2024-01-15>
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(ts, fmt)
+            return dt.replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    # Try just the date part
+    match = re.match(r"(\d{4}-\d{2}-\d{2})", ts)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            pass
+    return None
+
+
+def extract_org_todo_items(content: str) -> list[OrgTodoItem]:
+    """
+    Extract TODO items from org-mode content.
+
+    Parses headings with TODO keywords and extracts:
+    - Status (TODO/DONE/etc.)
+    - Priority ([#A]/[#B]/[#C])
+    - Tags (:tag1:tag2:)
+    - DEADLINE/SCHEDULED/CLOSED timestamps
+    - Body content
+    """
+    items = []
+    lines = content.split("\n")
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Match org heading with optional TODO keyword
+        # Pattern: *+ [KEYWORD] [#PRIORITY] Title :tags:
+        heading_match = re.match(
+            r"^(\*+)\s+"  # Stars
+            r"(?:(TODO|DONE|WAITING|CANCELLED|NEXT|SOMEDAY)\s+)?"  # Optional keyword
+            r"(?:\[#([ABC])\]\s+)?"  # Optional priority
+            r"(.+)$",  # Rest of heading
+            line,
+        )
+
+        if heading_match:
+            level = len(heading_match.group(1))
+            keyword = heading_match.group(2)
+            priority = heading_match.group(3)
+            rest = heading_match.group(4)
+
+            # Only process items with TODO keywords
+            if keyword:
+                # Extract tags from end of heading
+                heading_text, tags = extract_org_tags(rest)
+
+                # Collect body content until next heading of same or higher level
+                body_lines = []
+                deadline = None
+                scheduled = None
+                closed = None
+                i += 1
+
+                while i < len(lines):
+                    next_line = lines[i]
+                    # Check for next heading of same or higher level
+                    next_heading = re.match(r"^(\*+)\s+", next_line)
+                    if next_heading and len(next_heading.group(1)) <= level:
+                        break
+
+                    # Check for planning line (DEADLINE, SCHEDULED, CLOSED)
+                    if re.match(r"^\s*(DEADLINE|SCHEDULED|CLOSED):", next_line):
+                        if dl := re.search(r"DEADLINE:\s*(<[^>]+>)", next_line):
+                            deadline = parse_org_timestamp(dl.group(1))
+                        if sc := re.search(r"SCHEDULED:\s*(<[^>]+>)", next_line):
+                            scheduled = parse_org_timestamp(sc.group(1))
+                        if cl := re.search(r"CLOSED:\s*(\[[^\]]+\])", next_line):
+                            closed = parse_org_timestamp(cl.group(1))
+                    # Skip property drawers
+                    elif next_line.strip() == ":PROPERTIES:":
+                        while i < len(lines) and lines[i].strip() != ":END:":
+                            i += 1
+                    elif next_line.strip() and not next_line.strip().startswith(":"):
+                        body_lines.append(next_line)
+
+                    i += 1
+
+                items.append(
+                    OrgTodoItem(
+                        heading=heading_text.strip(),
+                        raw_heading=line,
+                        level=level,
+                        keyword=keyword,
+                        priority=priority,
+                        tags=tags,
+                        deadline=deadline,
+                        scheduled=scheduled,
+                        closed=closed,
+                        content="\n".join(body_lines).strip(),
+                    )
+                )
+                continue
+
+        i += 1
+
+    return items
+
+
+def org_todo_to_document(
+    item: OrgTodoItem,
+    file_path: Path,
+    file_metadata: DocumentMetadata,
+) -> Document:
+    """Convert an OrgTodoItem to a Document with structured fields."""
+    # Build org-mode link-style source path: file.org::*Heading
+    # Use the heading text (not raw) for cleaner anchors
+    anchor = f"*{item.keyword} {item.heading}" if item.keyword else f"*{item.heading}"
+    source_path = f"{file_path.resolve()}::{anchor}"
+
+    # Map org priority to numeric (A=1, B=2, C=3)
+    priority_map = {"A": 1, "B": 2, "C": 3}
+    priority = priority_map.get(item.priority) if item.priority else None
+    # SOMEDAY items get lowest priority
+    if item.keyword == "SOMEDAY":
+        priority = 5
+
+    # Map org keyword to status
+    status = "completed" if item.keyword in ORG_DONE_KEYWORDS else "pending"
+
+    # Use deadline or scheduled as due_date
+    due_date = item.deadline or item.scheduled
+
+    # Merge file tags with item tags
+    tags = list(file_metadata.tags) + item.tags
+
+    metadata = DocumentMetadata(
+        tags=tags,
+        project=file_metadata.project,
+        category=file_metadata.category,
+    )
+
+    # Build content with context
+    content_parts = [item.heading]
+    if item.content:
+        content_parts.append(item.content)
+    content = "\n\n".join(content_parts)
+
+    return Document(
+        source_path=source_path,
+        source_type="org-todo",
+        title=item.heading,
+        content=content,
+        metadata=metadata,
+        due_date=due_date,
+        status=status,
+        priority=priority,
+    )
 
 
 def extract_code_context(content: str, file_ext: str) -> dict:
@@ -540,7 +737,7 @@ def parse_markdown(path: Path, extra_metadata: dict | None = None) -> Document:
 
 
 def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
-    """Parse an org-mode (.org) file into a Document."""
+    """Parse an org-mode (.org) file into a Document (file only, no TODO extraction)."""
     content = read_text_with_fallback(path)
 
     # Extract org metadata (#+KEY: value lines)
@@ -596,6 +793,32 @@ def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
         metadata=metadata,
         sections=sections,
     )
+
+
+def parse_org_with_todos(
+    path: Path, extra_metadata: dict | None = None
+) -> list[Document]:
+    """
+    Parse an org-mode file into multiple Documents.
+
+    Returns:
+        - The file itself as one Document (source_type='org')
+        - Each TODO item as a separate Document (source_type='org-todo')
+    """
+    # Parse the file document
+    file_doc = parse_org(path, extra_metadata)
+
+    # Extract TODO items
+    content = read_text_with_fallback(path)
+    todo_items = extract_org_todo_items(content)
+
+    # Convert TODO items to Documents
+    todo_docs = [
+        org_todo_to_document(item, path, file_doc.metadata) for item in todo_items
+    ]
+
+    # File document first, then TODO documents
+    return [file_doc] + todo_docs
 
 
 def parse_text(path: Path, extra_metadata: dict | None = None) -> Document:
@@ -921,8 +1144,14 @@ def is_text_file(path: Path) -> bool:
         return False
 
 
-def parse_document(path: Path, extra_metadata: dict | None = None, force: bool = False) -> Document:
-    """Route document to appropriate parser based on extension.
+def parse_document(
+    path: Path, extra_metadata: dict | None = None, force: bool = False
+) -> list[Document]:
+    """Parse a file into one or more Documents.
+
+    Some file types (e.g., org-mode) produce multiple documents:
+    - The file itself (for semantic search)
+    - Individual actionable items like TODOs (for structured queries)
 
     Checks plugin registry first, then falls back to built-in parsers.
     If force=True, parse unknown extensions as text/code (for explicitly provided files).
@@ -931,24 +1160,24 @@ def parse_document(path: Path, extra_metadata: dict | None = None, force: bool =
     from .plugins.registry import PluginRegistry
 
     if parser := PluginRegistry.get_parser_for_file(path):
-        return parser.parse(path, extra_metadata)
+        return [parser.parse(path, extra_metadata)]
 
     # Fall back to built-in parsers
     if path.suffix == ".md":
-        return parse_markdown(path, extra_metadata)
+        return [parse_markdown(path, extra_metadata)]
     elif path.suffix == ".org":
-        return parse_org(path, extra_metadata)
+        # Org files produce multiple documents: file + TODO items
+        return parse_org_with_todos(path, extra_metadata)
     elif path.suffix == ".pdf":
-        return parse_pdf(path, extra_metadata)
+        return [parse_pdf(path, extra_metadata)]
     elif path.suffix == ".docx":
-        return parse_docx(path, extra_metadata)
+        return [parse_docx(path, extra_metadata)]
     elif path.suffix in config.document_extensions:
-        return parse_text(path, extra_metadata)
+        return [parse_text(path, extra_metadata)]
     elif path.suffix in config.code_extensions:
-        return parse_code(path, extra_metadata)
+        return [parse_code(path, extra_metadata)]
     elif force:
-        # Unknown extension but explicitly requested - treat as code/config file
-        return parse_code(path, extra_metadata)
+        return [parse_code(path, extra_metadata)]
     else:
         raise ValueError(f"Unsupported file type: {path.suffix}")
 
@@ -988,11 +1217,14 @@ def collect_documents(
             continue
 
         try:
-            doc = parse_document(path, extra_metadata)
+            docs = parse_document(path, extra_metadata)
+            if not docs:
+                continue
 
-            # Content-based checks (after parsing)
+            # Content-based checks on the primary (file) document
+            primary_doc = docs[0]
             if config.scan_content:
-                skip_check = check_file_skip(path, doc.content)
+                skip_check = check_file_skip(path, primary_doc.content)
                 if skip_check.should_skip:
                     prefix = "BLOCKED" if skip_check.is_security else "Skipping"
                     print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
@@ -1000,10 +1232,13 @@ def collect_documents(
 
             # Capture file mtime for staleness tracking
             mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-            doc.metadata.extra["file_modified_at"] = mtime.isoformat()
+            mtime_iso = mtime.isoformat()
 
-            collected += 1
-            yield doc
+            # Yield all documents from this file
+            for doc in docs:
+                doc.metadata.extra["file_modified_at"] = mtime_iso
+                collected += 1
+                yield doc
         except Exception as e:
             print(f"Error parsing {path}: {e}", file=sys.stderr)
 
@@ -1114,11 +1349,27 @@ class Ingester:
         2. Create contextual chunks
         3. Generate embeddings via Modal (or local)
         4. Store in pgvector
+
+        For files that produce multiple documents (e.g., org with TODOs):
+        - Primary document: file.org (source_type='org')
+        - Derived documents: file.org::*TODO ... (source_type='org-todo')
+        When a primary document changes, all derived documents are deleted first.
         """
         with psycopg.connect(self.db_url, row_factory=dict_row) as conn:
             register_vector(conn)
+
+            # Track which primary files we've already cleaned up derived docs for
+            cleaned_derived = set()
+
             for doc in documents:
                 doc_hash = content_hash(doc.content)
+
+                # Determine if this is a derived document (has :: in path)
+                is_derived = "::" in doc.source_path
+                if is_derived:
+                    base_path = doc.source_path.split("::")[0]
+                else:
+                    base_path = doc.source_path
 
                 # Check if document exists and unchanged
                 existing = conn.execute(
@@ -1139,6 +1390,16 @@ class Ingester:
                     print(f"Skipping (unchanged): {doc.source_path}")
                     continue
 
+                # For primary documents: also delete any derived documents
+                if not is_derived and base_path not in cleaned_derived:
+                    deleted = conn.execute(
+                        "DELETE FROM documents WHERE source_path LIKE %s RETURNING id",
+                        (base_path + "::%",),
+                    ).fetchall()
+                    if deleted:
+                        print(f"  Deleted {len(deleted)} derived documents from {base_path}")
+                    cleaned_derived.add(base_path)
+
                 # Check if same path exists with different hash (updated file)
                 old_doc = conn.execute(
                     "SELECT id FROM documents WHERE source_path = %s", (doc.source_path,)
@@ -1153,8 +1414,11 @@ class Ingester:
                 # Insert document (ON CONFLICT handles duplicate content from different paths)
                 result = conn.execute(
                     """
-                    INSERT INTO documents (source_path, source_type, title, content, metadata, content_hash)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO documents (
+                        source_path, source_type, title, content, metadata, content_hash,
+                        due_date, event_start, event_end, status, priority
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (content_hash) DO NOTHING
                     RETURNING id
                     """,
@@ -1165,6 +1429,11 @@ class Ingester:
                         doc.content,
                         psycopg.types.json.Json(doc.metadata.to_dict()),
                         doc_hash,
+                        doc.due_date,
+                        doc.event_start,
+                        doc.event_end,
+                        doc.status,
+                        doc.priority,
                     ),
                 ).fetchone()
 
@@ -1278,10 +1547,10 @@ Examples:
             # For explicitly provided files, try to parse even with unknown extension
             # Always allow .pdf and .docx even if not in config (user may have old config)
             if path.suffix in config.all_extensions or path.suffix in (".pdf", ".docx"):
-                documents.append(parse_document(path, args.metadata))
+                documents.extend(parse_document(path, args.metadata))
             elif is_text_file(path):
                 print(f"Parsing as text: {path}", file=sys.stderr)
-                documents.append(parse_document(path, args.metadata, force=True))
+                documents.extend(parse_document(path, args.metadata, force=True))
             else:
                 print(f"Skipping binary file: {path}", file=sys.stderr)
 

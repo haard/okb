@@ -135,6 +135,7 @@ Add to your Claude Code MCP configuration:
 | `recent_documents` | Show recently indexed files |
 | `save_knowledge` | Save knowledge from Claude for future reference |
 | `delete_knowledge` | Delete a Claude-saved knowledge entry |
+| `get_actionable_items` | Query tasks/events with structured filters |
 
 ## Contextual Chunking
 
