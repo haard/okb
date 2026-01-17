@@ -20,6 +20,8 @@ def get_model():
 
     First call takes ~10-30 seconds to download/load.
     Subsequent calls return cached model instantly.
+
+    Auto-detects GPU (CUDA/MPS) and uses it if available.
     """
     from sentence_transformers import SentenceTransformer
 
@@ -28,7 +30,9 @@ def get_model():
         config.model_name,
         trust_remote_code=True,
     )
-    print("Model loaded (CPU mode)")
+    # Report actual device being used
+    device = str(model.device)
+    print(f"Model loaded on {device}")
     return model
 
 

@@ -924,8 +924,16 @@ def is_text_file(path: Path) -> bool:
 def parse_document(path: Path, extra_metadata: dict | None = None, force: bool = False) -> Document:
     """Route document to appropriate parser based on extension.
 
+    Checks plugin registry first, then falls back to built-in parsers.
     If force=True, parse unknown extensions as text/code (for explicitly provided files).
     """
+    # Check plugin registry first
+    from .plugins.registry import PluginRegistry
+
+    if parser := PluginRegistry.get_parser_for_file(path):
+        return parser.parse(path, extra_metadata)
+
+    # Fall back to built-in parsers
     if path.suffix == ".md":
         return parse_markdown(path, extra_metadata)
     elif path.suffix == ".org":

@@ -3,12 +3,48 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+
+
+def resolve_env_vars(value: Any) -> Any:
+    """Recursively resolve ${ENV_VAR} references in config values.
+
+    Supports:
+    - ${VAR} - required, raises if not set
+    - ${VAR:-default} - optional with default value
+
+    Args:
+        value: Config value (string, dict, or list)
+
+    Returns:
+        Value with env vars resolved
+    """
+    if isinstance(value, str):
+        # Pattern: ${VAR} or ${VAR:-default}
+        pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
+
+        def replacer(match):
+            var_name = match.group(1)
+            default = match.group(2)
+            env_value = os.environ.get(var_name)
+            if env_value is not None:
+                return env_value
+            if default is not None:
+                return default
+            raise ValueError(f"Environment variable ${var_name} not set and no default provided")
+
+        return re.sub(pattern, replacer, value)
+    elif isinstance(value, dict):
+        return {k: resolve_env_vars(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [resolve_env_vars(v) for v in value]
+    return value
 
 
 @dataclass
@@ -118,6 +154,16 @@ DEFAULTS = {
         "scan_content": True,
         "max_line_length_for_minified": 1000,
     },
+    "plugins": {
+        # API sources configuration
+        # Example:
+        # sources:
+        #   github:
+        #     enabled: true
+        #     token: ${GITHUB_TOKEN}
+        #     repos: [owner/repo1, owner/repo2]
+        "sources": {},
+    },
 }
 
 
@@ -159,6 +205,9 @@ class Config:
     skip_patterns: list[str] = field(default_factory=list)
     scan_content: bool = True
     max_line_length_for_minified: int = 1000
+
+    # Plugin settings (loaded from config in __post_init__)
+    plugin_sources: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self):
         """Load configuration from file and environment."""
@@ -263,6 +312,10 @@ class Config:
             "max_line_length_for_minified", DEFAULTS["security"]["max_line_length_for_minified"]
         )
 
+        # Plugin settings - resolve env vars in source configs
+        plugins_cfg = file_config.get("plugins", {})
+        self.plugin_sources = plugins_cfg.get("sources", {})
+
     def get_database(self, name: str | None = None) -> DatabaseConfig:
         """Get database config by name, or default if None."""
         if name is None:
@@ -285,6 +338,30 @@ class Config:
     def should_skip_path(self, path: Path) -> bool:
         """Check if a path should be skipped during collection."""
         return any(part.startswith(".") or part in self.skip_directories for part in path.parts)
+
+    def get_source_config(self, source_name: str) -> dict | None:
+        """Get resolved config for a plugin source.
+
+        Resolves ${ENV_VAR} references in the config values.
+        Returns None if source not configured or disabled.
+        """
+        source_cfg = self.plugin_sources.get(source_name)
+        if source_cfg is None:
+            return None
+        if not source_cfg.get("enabled", True):
+            return None
+        try:
+            return resolve_env_vars(source_cfg)
+        except ValueError as e:
+            raise ValueError(f"Error resolving config for source '{source_name}': {e}") from e
+
+    def list_enabled_sources(self) -> list[str]:
+        """List all enabled plugin sources."""
+        return [
+            name
+            for name, cfg in self.plugin_sources.items()
+            if cfg.get("enabled", True)
+        ]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for display."""
@@ -327,6 +404,12 @@ class Config:
                 "skip_patterns": self.skip_patterns,
                 "scan_content": self.scan_content,
                 "max_line_length_for_minified": self.max_line_length_for_minified,
+            },
+            "plugins": {
+                "sources": {
+                    name: {**cfg, "token": "***" if "token" in cfg else None}
+                    for name, cfg in self.plugin_sources.items()
+                },
             },
         }
 

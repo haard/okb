@@ -29,6 +29,22 @@ dev = [
 [project.scripts]
 lkb = "lkb.cli:main"
 
+# Plugin entry points - external plugins register here
+# Example for a plugin package:
+#   [project.entry-points."lkb.parsers"]
+#   epub = "lkb_epub:EpubParser"
+#
+#   [project.entry-points."lkb.sources"]
+#   github = "lkb_github:GitHubSource"
+
+[project.entry-points."lkb.parsers"]
+# Built-in parsers are handled directly in ingest.py
+# Plugins can register additional parsers here
+
+[project.entry-points."lkb.sources"]
+# Plugins register API sources here
+# Example: github = "lkb_github:GitHubSource"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

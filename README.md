@@ -45,6 +45,9 @@ lkb ingest ~/notes ~/docs
 | `lkb config init` | Create default config file |
 | `lkb config show` | Show current configuration |
 | `lkb modal deploy` | Deploy GPU embedder to Modal |
+| `lkb sync list` | List available API sources (plugins) |
+| `lkb sync run <sources>` | Sync data from external APIs |
+| `lkb sync status` | Show last sync times |
 
 ## Architecture
 
@@ -179,6 +182,57 @@ pytest
 
 # Lint and format
 ruff check . && ruff format .
+```
+
+## Plugin System
+
+LKB supports plugins for custom file parsers and API data sources (GitHub, Todoist, etc).
+
+### Creating a Plugin
+
+```python
+# File parser plugin
+from lkb.plugins import FileParser, Document
+
+class EpubParser:
+    extensions = ['.epub']
+    source_type = 'epub'
+
+    def can_parse(self, path): return path.suffix.lower() == '.epub'
+    def parse(self, path, extra_metadata=None) -> Document: ...
+
+# API source plugin
+from lkb.plugins import APISource, SyncState, Document
+
+class GitHubSource:
+    name = 'github'
+    source_type = 'github-issue'
+
+    def configure(self, config): ...
+    def fetch(self, state: SyncState | None) -> tuple[list[Document], SyncState]: ...
+```
+
+### Registering Plugins
+
+In your plugin's `pyproject.toml`:
+```toml
+[project.entry-points."lkb.parsers"]
+epub = "lkb_epub:EpubParser"
+
+[project.entry-points."lkb.sources"]
+github = "lkb_github:GitHubSource"
+```
+
+### Configuring API Sources
+
+```yaml
+# ~/.config/lkb/config.yaml
+plugins:
+  sources:
+    github:
+      enabled: true
+      token: ${GITHUB_TOKEN}  # Resolved from environment
+      repos: [owner/repo1, owner/repo2]
 ```
 
 ## License

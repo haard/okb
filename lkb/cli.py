@@ -605,5 +605,218 @@ def deploy():
     sys.exit(result.returncode)
 
 
+# =============================================================================
+# Sync commands (plugin system)
+# =============================================================================
+
+
+@main.group()
+def sync():
+    """Sync data from external API sources (plugins)."""
+    pass
+
+
+def _get_sync_state(conn, source_name: str, db_name: str):
+    """Get sync state from database."""
+    from .plugins.base import SyncState
+
+    result = conn.execute(
+        """SELECT last_sync, cursor, extra FROM sync_state
+           WHERE source_name = %s AND database_name = %s""",
+        (source_name, db_name),
+    ).fetchone()
+
+    if result:
+        return SyncState(
+            last_sync=result["last_sync"],
+            cursor=result["cursor"],
+            extra=result["extra"] or {},
+        )
+    return None
+
+
+def _save_sync_state(conn, source_name: str, db_name: str, state):
+    """Save sync state to database."""
+    conn.execute(
+        """INSERT INTO sync_state (source_name, database_name, last_sync, cursor, extra, updated_at)
+           VALUES (%s, %s, %s, %s, %s, NOW())
+           ON CONFLICT (source_name, database_name)
+           DO UPDATE SET last_sync = EXCLUDED.last_sync,
+                        cursor = EXCLUDED.cursor,
+                        extra = EXCLUDED.extra,
+                        updated_at = NOW()""",
+        (source_name, db_name, state.last_sync, state.cursor, json.dumps(state.extra)),
+    )
+    conn.commit()
+
+
+@sync.command("run")
+@click.argument("sources", nargs=-1)
+@click.option("--all", "sync_all", is_flag=True, help="Sync all enabled sources")
+@click.option("--full", is_flag=True, help="Ignore incremental state, do full sync")
+@click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
+@click.option("--db", "database", default=None, help="Database to sync into")
+@click.pass_context
+def sync_run(ctx, sources: tuple[str, ...], sync_all: bool, full: bool, local: bool,
+             database: str | None):
+    """Sync from API sources.
+
+    Example: lkb sync run github todoist
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from .ingest import Ingester
+    from .plugins.registry import PluginRegistry
+
+    # Get database
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    # Determine which sources to sync
+    if sync_all:
+        source_names = config.list_enabled_sources()
+    elif sources:
+        source_names = list(sources)
+    else:
+        click.echo("Error: Specify sources to sync or use --all", err=True)
+        click.echo("Available sources: ", nl=False)
+        click.echo(", ".join(PluginRegistry.list_sources()) or "(none installed)")
+        sys.exit(1)
+
+    if not source_names:
+        click.echo("No sources to sync.")
+        return
+
+    ingester = Ingester(db_cfg.url, use_modal=not local)
+
+    with psycopg.connect(db_cfg.url, row_factory=dict_row) as conn:
+        for source_name in source_names:
+            # Get the plugin
+            source = PluginRegistry.get_source(source_name)
+            if source is None:
+                click.echo(f"Error: Source '{source_name}' not found.", err=True)
+                click.echo(f"Installed sources: {', '.join(PluginRegistry.list_sources())}")
+                continue
+
+            # Get and resolve config
+            source_cfg = config.get_source_config(source_name)
+            if source_cfg is None:
+                click.echo(f"Skipping '{source_name}': not configured or disabled", err=True)
+                continue
+
+            try:
+                source.configure(source_cfg)
+            except Exception as e:
+                click.echo(f"Error configuring '{source_name}': {e}", err=True)
+                continue
+
+            # Get sync state (unless --full)
+            state = None if full else _get_sync_state(conn, source_name, db_cfg.name)
+
+            click.echo(f"Syncing {source_name}..." + (" (full)" if full else ""))
+
+            try:
+                documents, new_state = source.fetch(state)
+            except Exception as e:
+                click.echo(f"Error fetching from '{source_name}': {e}", err=True)
+                continue
+
+            if documents:
+                click.echo(f"  Fetched {len(documents)} documents")
+                ingester.ingest_documents(documents)
+            else:
+                click.echo("  No new documents")
+
+            # Save state
+            _save_sync_state(conn, source_name, db_cfg.name, new_state)
+
+    click.echo("Done!")
+
+
+@sync.command("list")
+def sync_list():
+    """List available API sources."""
+    from .plugins.registry import PluginRegistry
+
+    installed = PluginRegistry.list_sources()
+    configured = config.list_enabled_sources()
+
+    click.echo("Installed sources:")
+    if installed:
+        for name in installed:
+            status = "configured" if name in configured else "not configured"
+            click.echo(f"  {name} [{status}]")
+    else:
+        click.echo("  (none)")
+
+    # Show configured but not installed
+    not_installed = set(configured) - set(installed)
+    if not_installed:
+        click.echo("\nConfigured but not installed:")
+        for name in not_installed:
+            click.echo(f"  {name}")
+
+
+@sync.command("status")
+@click.argument("source", required=False)
+@click.option("--db", "database", default=None, help="Database to check")
+@click.pass_context
+def sync_status(ctx, source: str | None, database: str | None):
+    """Show sync status and last sync times."""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    with psycopg.connect(db_cfg.url, row_factory=dict_row) as conn:
+        if source:
+            # Show status for specific source
+            result = conn.execute(
+                """SELECT source_name, last_sync, cursor, extra, updated_at
+                   FROM sync_state
+                   WHERE source_name = %s AND database_name = %s""",
+                (source, db_cfg.name),
+            ).fetchone()
+
+            if result:
+                click.echo(f"Source: {result['source_name']}")
+                click.echo(f"  Last sync: {result['last_sync'] or 'never'}")
+                click.echo(f"  Updated: {result['updated_at']}")
+                if result['cursor']:
+                    click.echo(f"  Cursor: {result['cursor'][:50]}...")
+            else:
+                click.echo(f"No sync history for '{source}'")
+
+            # Show document count
+            doc_count = conn.execute(
+                """SELECT COUNT(*) as count FROM documents
+                   WHERE metadata->>'sync_source' = %s""",
+                (source,),
+            ).fetchone()
+            click.echo(f"  Documents: {doc_count['count']}")
+        else:
+            # Show all sync states
+            results = conn.execute(
+                """SELECT source_name, last_sync, updated_at
+                   FROM sync_state
+                   WHERE database_name = %s
+                   ORDER BY updated_at DESC""",
+                (db_cfg.name,),
+            ).fetchall()
+
+            if results:
+                click.echo(f"Sync status for database '{db_cfg.name}':")
+                for row in results:
+                    if row["last_sync"]:
+                        last = row["last_sync"].strftime("%Y-%m-%d %H:%M")
+                    else:
+                        last = "never"
+                    click.echo(f"  {row['source_name']}: {last}")
+            else:
+                click.echo("No sync history")
+
+
 if __name__ == "__main__":
     main()
