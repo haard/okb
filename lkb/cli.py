@@ -134,8 +134,7 @@ def _ensure_databases_exist():
 
     # Connect to postgres database (admin db) to create others
     admin_url = (
-        f"postgresql://knowledge:{config.docker_password}@"
-        f"localhost:{config.docker_port}/postgres"
+        f"postgresql://knowledge:{config.docker_password}@localhost:{config.docker_port}/postgres"
     )
 
     try:
@@ -529,17 +528,31 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
 
 @main.command()
 @click.option("--db", "database", default=None, help="Database to serve")
+@click.option("--http", "use_http", is_flag=True, help="Use HTTP transport instead of stdio")
+@click.option("--host", default=None, help="HTTP server host (default: 127.0.0.1)")
+@click.option("--port", type=int, default=None, help="HTTP server port (default: 8080)")
 @click.pass_context
-def serve(ctx, database: str | None):
-    """Start the MCP server for Claude Code integration."""
+def serve(ctx, database: str | None, use_http: bool, host: str | None, port: int | None):
+    """Start the MCP server for Claude Code integration.
+
+    By default, runs in stdio mode for direct Claude Code integration.
+    Use --http to run as an HTTP server with token authentication.
+    """
     import asyncio
 
-    from .mcp_server import main as mcp_main
+    if use_http:
+        from .http_server import run_http_server
 
-    # Get database URL from --db option or context
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-    asyncio.run(mcp_main(db_cfg.url))
+        http_host = host or config.http_host
+        http_port = port or config.http_port
+        run_http_server(host=http_host, port=http_port)
+    else:
+        from .mcp_server import main as mcp_main
+
+        # Get database URL from --db option or context
+        db_name = database or ctx.obj.get("database")
+        db_cfg = config.get_database(db_name)
+        asyncio.run(mcp_main(db_cfg.url))
 
 
 # =============================================================================
@@ -657,8 +670,9 @@ def _save_sync_state(conn, source_name: str, db_name: str, state):
 @click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
 @click.option("--db", "database", default=None, help="Database to sync into")
 @click.pass_context
-def sync_run(ctx, sources: tuple[str, ...], sync_all: bool, full: bool, local: bool,
-             database: str | None):
+def sync_run(
+    ctx, sources: tuple[str, ...], sync_all: bool, full: bool, local: bool, database: str | None
+):
     """Sync from API sources.
 
     Example: lkb sync run github todoist
@@ -784,7 +798,7 @@ def sync_status(ctx, source: str | None, database: str | None):
                 click.echo(f"Source: {result['source_name']}")
                 click.echo(f"  Last sync: {result['last_sync'] or 'never'}")
                 click.echo(f"  Updated: {result['updated_at']}")
-                if result['cursor']:
+                if result["cursor"]:
                     click.echo(f"  Cursor: {result['cursor'][:50]}...")
             else:
                 click.echo(f"No sync history for '{source}'")
@@ -816,6 +830,95 @@ def sync_status(ctx, source: str | None, database: str | None):
                     click.echo(f"  {row['source_name']}: {last}")
             else:
                 click.echo("No sync history")
+
+
+# =============================================================================
+# Token commands
+# =============================================================================
+
+
+@main.group()
+def token():
+    """Manage API tokens for HTTP access."""
+    pass
+
+
+@token.command("create")
+@click.option("--db", "database", default=None, help="Database to create token for")
+@click.option("--ro", "read_only", is_flag=True, help="Create read-only token (default: rw)")
+@click.option("-d", "--description", default=None, help="Token description")
+@click.pass_context
+def token_create(ctx, database: str | None, read_only: bool, description: str | None):
+    """Create a new API token."""
+    from .tokens import create_token
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+    permissions = "ro" if read_only else "rw"
+
+    try:
+        token = create_token(db_cfg.url, db_cfg.name, permissions, description)
+        click.echo(f"Token created for database '{db_cfg.name}' ({permissions}):")
+        click.echo(f"  {token}")
+        click.echo("")
+        click.echo("Save this token - it cannot be retrieved later.")
+    except Exception as e:
+        click.echo(f"Error creating token: {e}", err=True)
+        sys.exit(1)
+
+
+@token.command("list")
+@click.option("--db", "database", default=None, help="Database to list tokens for")
+@click.pass_context
+def token_list(ctx, database: str | None):
+    """List all tokens for a database."""
+    from .tokens import list_tokens
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    try:
+        tokens = list_tokens(db_cfg.url)
+        if not tokens:
+            click.echo(f"No tokens found for database '{db_cfg.name}'")
+            return
+
+        click.echo(f"Tokens for database '{db_cfg.name}':")
+        for t in tokens:
+            desc = f" - {t.description}" if t.description else ""
+            last_used = t.last_used_at.strftime("%Y-%m-%d %H:%M") if t.last_used_at else "never"
+            click.echo(f"  [{t.permissions}] {t.token_hash[:12]}...{desc}")
+            created = t.created_at.strftime("%Y-%m-%d %H:%M")
+            click.echo(f"      Created: {created}, Last used: {last_used}")
+    except Exception as e:
+        click.echo(f"Error listing tokens: {e}", err=True)
+        sys.exit(1)
+
+
+@token.command("revoke")
+@click.argument("token_value")
+@click.option("--db", "database", default=None, help="Database to revoke token from")
+@click.pass_context
+def token_revoke(ctx, token_value: str, database: str | None):
+    """Revoke (delete) an API token.
+
+    TOKEN_VALUE must be the full token string.
+    """
+    from .tokens import delete_token
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    try:
+        deleted = delete_token(db_cfg.url, token_value)
+        if deleted:
+            click.echo("Token revoked.")
+        else:
+            click.echo("Token not found. Make sure you're using the full token string.", err=True)
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error revoking token: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

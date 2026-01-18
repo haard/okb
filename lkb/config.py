@@ -100,6 +100,10 @@ DEFAULTS = {
         "volume_name": "lkb-pgvector-data",
         "password": "localdev",
     },
+    "http": {
+        "host": "127.0.0.1",
+        "port": 8080,
+    },
     "embedding": {
         "model_name": "nomic-ai/nomic-embed-text-v1.5",
         "dimension": 768,
@@ -117,39 +121,95 @@ DEFAULTS = {
     "extensions": {
         "documents": [".md", ".txt", ".markdown", ".org", ".pdf", ".docx"],
         "code": [
-            ".py", ".rb", ".js", ".ts", ".jsx", ".tsx",
-            ".sql", ".sh", ".bash", ".fish",
-            ".yaml", ".yml", ".toml", ".json",
-            ".html", ".css", ".scss",
-            ".go", ".rs", ".java", ".kt", ".c", ".cpp", ".h",
+            ".py",
+            ".rb",
+            ".js",
+            ".ts",
+            ".jsx",
+            ".tsx",
+            ".sql",
+            ".sh",
+            ".bash",
+            ".fish",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".json",
+            ".html",
+            ".css",
+            ".scss",
+            ".go",
+            ".rs",
+            ".java",
+            ".kt",
+            ".c",
+            ".cpp",
+            ".h",
         ],
         "skip_directories": [
-            ".git", ".hg", ".svn", "vault",
-            "node_modules", "__pycache__", ".venv", "venv",
-            ".mypy_cache", ".pytest_cache", ".ruff_cache",
-            "dist", "build", ".next", ".nuxt",
-            "lib", "libs", "vendor", "third_party", "third-party",
-            "external", "bower_components",
+            ".git",
+            ".hg",
+            ".svn",
+            "vault",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            "dist",
+            "build",
+            ".next",
+            ".nuxt",
+            "lib",
+            "libs",
+            "vendor",
+            "third_party",
+            "third-party",
+            "external",
+            "bower_components",
         ],
     },
     "security": {
         # Sensitive files - blocked by default
         "block_patterns": [
-            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-            "*.pem", "*.key", "*.p12", "*.pfx",
-            ".env", ".env.*",
-            "*credentials*", "*secret*",
-            ".netrc", ".pgpass", ".my.cnf",
-            "*_history", ".bash_history", ".zsh_history",
+            "id_rsa",
+            "id_ed25519",
+            "id_ecdsa",
+            "id_dsa",
+            "*.pem",
+            "*.key",
+            "*.p12",
+            "*.pfx",
+            ".env",
+            ".env.*",
+            "*credentials*",
+            "*secret*",
+            ".netrc",
+            ".pgpass",
+            ".my.cnf",
+            "*_history",
+            ".bash_history",
+            ".zsh_history",
         ],
         # Low-value files - skipped for usefulness not security
         "skip_patterns": [
-            "*.min.js", "*.min.css",
-            "*.bundle.js", "*.chunk.js",
+            "*.min.js",
+            "*.min.css",
+            "*.bundle.js",
+            "*.chunk.js",
             "*.map",
-            "package-lock.json", "yarn.lock", "uv.lock", "Cargo.lock",
-            "*.pyc", "*.pyo",
-            "*.tmp", "*.tmp.*", ".#*", "*~",  # Temp/backup files
+            "package-lock.json",
+            "yarn.lock",
+            "uv.lock",
+            "Cargo.lock",
+            "*.pyc",
+            "*.pyo",
+            "*.tmp",
+            "*.tmp.*",
+            ".#*",
+            "*~",  # Temp/backup files
         ],
         "scan_content": True,
         "max_line_length_for_minified": 1000,
@@ -180,6 +240,10 @@ class Config:
     docker_container_name: str = "lkb-pgvector"
     docker_volume_name: str = "lkb-pgvector-data"
     docker_password: str = "localdev"
+
+    # HTTP server
+    http_host: str = "127.0.0.1"
+    http_port: int = 8080
 
     # Embedding model
     model_name: str = "nomic-ai/nomic-embed-text-v1.5"
@@ -264,6 +328,19 @@ class Config:
             docker_cfg.get("password", DEFAULTS["docker"]["password"]),
         )
 
+        # HTTP server settings
+        http_cfg = file_config.get("http", {})
+        self.http_host = os.environ.get(
+            "LKB_HTTP_HOST",
+            http_cfg.get("host", DEFAULTS["http"]["host"]),
+        )
+        self.http_port = int(
+            os.environ.get(
+                "LKB_HTTP_PORT",
+                http_cfg.get("port", DEFAULTS["http"]["port"]),
+            )
+        )
+
         # Embedding settings
         embedding_cfg = file_config.get("embedding", {})
         self.model_name = embedding_cfg.get("model_name", DEFAULTS["embedding"]["model_name"])
@@ -290,9 +367,7 @@ class Config:
         self.document_extensions = frozenset(
             ext_cfg.get("documents", DEFAULTS["extensions"]["documents"])
         )
-        self.code_extensions = frozenset(
-            ext_cfg.get("code", DEFAULTS["extensions"]["code"])
-        )
+        self.code_extensions = frozenset(ext_cfg.get("code", DEFAULTS["extensions"]["code"]))
         self.skip_directories = frozenset(
             ext_cfg.get("skip_directories", DEFAULTS["extensions"]["skip_directories"])
         )
@@ -305,9 +380,7 @@ class Config:
         self.skip_patterns = security_cfg.get(
             "skip_patterns", DEFAULTS["security"]["skip_patterns"]
         )
-        self.scan_content = security_cfg.get(
-            "scan_content", DEFAULTS["security"]["scan_content"]
-        )
+        self.scan_content = security_cfg.get("scan_content", DEFAULTS["security"]["scan_content"])
         self.max_line_length_for_minified = security_cfg.get(
             "max_line_length_for_minified", DEFAULTS["security"]["max_line_length_for_minified"]
         )
@@ -357,11 +430,7 @@ class Config:
 
     def list_enabled_sources(self) -> list[str]:
         """List all enabled plugin sources."""
-        return [
-            name
-            for name, cfg in self.plugin_sources.items()
-            if cfg.get("enabled", True)
-        ]
+        return [name for name, cfg in self.plugin_sources.items() if cfg.get("enabled", True)]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for display."""
@@ -379,6 +448,10 @@ class Config:
                 "container_name": self.docker_container_name,
                 "volume_name": self.docker_volume_name,
                 "password": "***" if self.docker_password else None,
+            },
+            "http": {
+                "host": self.http_host,
+                "port": self.http_port,
             },
             "embedding": {
                 "model_name": self.model_name,

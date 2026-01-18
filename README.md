@@ -40,11 +40,15 @@ lkb ingest ~/notes ~/docs
 | `lkb db destroy` | Remove container and volume (destructive) |
 | `lkb ingest <paths>` | Ingest documents into knowledge base |
 | `lkb ingest <paths> --local` | Ingest using CPU embedding (no Modal) |
-| `lkb serve` | Start MCP server (for Claude Code) |
+| `lkb serve` | Start MCP server (stdio, for Claude Code) |
+| `lkb serve --http` | Start HTTP MCP server with token auth |
 | `lkb watch <paths>` | Watch directories for changes |
 | `lkb config init` | Create default config file |
 | `lkb config show` | Show current configuration |
 | `lkb modal deploy` | Deploy GPU embedder to Modal |
+| `lkb token create` | Create API token for HTTP server |
+| `lkb token list` | List tokens for a database |
+| `lkb token revoke` | Revoke an API token |
 | `lkb sync list` | List available API sources (plugins) |
 | `lkb sync run <sources>` | Sync data from external APIs |
 | `lkb sync status` | Show last sync times |
@@ -109,6 +113,8 @@ Environment variables override config file settings:
 
 ## Claude Code MCP Config
 
+### stdio mode (default)
+
 Add to your Claude Code MCP configuration:
 
 ```json
@@ -117,6 +123,35 @@ Add to your Claude Code MCP configuration:
     "knowledge-base": {
       "command": "lkb",
       "args": ["serve"]
+    }
+  }
+}
+```
+
+### HTTP mode (for remote/shared servers)
+
+First, start the HTTP server and create a token:
+
+```bash
+# Create a token
+lkb token create --db default -d "Claude Code"
+# Output: lkb_default_rw_a1b2c3d4e5f6g7h8
+
+# Start HTTP server
+lkb serve --http --host 0.0.0.0 --port 8080
+```
+
+Then configure Claude Code to connect via SSE:
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "type": "sse",
+      "url": "http://localhost:8080/sse",
+      "headers": {
+        "Authorization": "Bearer lkb_default_rw_a1b2c3d4e5f6g7h8"
+      }
     }
   }
 }
