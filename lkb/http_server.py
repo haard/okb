@@ -17,7 +17,7 @@ from mcp.types import CallToolResult, TextContent, Tool
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from .config import config
 from .local_embedder import warmup
@@ -344,29 +344,27 @@ class HTTPMCPServer:
 
             return Response()
 
-        async def handle_messages(request: Request) -> Response:
-            """Handle POST messages for MCP."""
+        async def handle_messages(scope, receive, send):
+            """Handle POST messages for MCP (raw ASGI handler)."""
+            request = Request(scope, receive)
+
             # Look up session from query params
             session_id = request.query_params.get("session_id")
             if not session_id:
-                return JSONResponse(
-                    {"error": "Missing session_id"},
-                    status_code=400,
-                )
+                response = JSONResponse({"error": "Missing session_id"}, status_code=400)
+                await response(scope, receive, send)
+                return
 
             token_info = self.session_tokens.get(session_id)
             if not token_info:
-                return JSONResponse(
-                    {"error": "Invalid or expired session"},
-                    status_code=401,
-                )
+                response = JSONResponse({"error": "Invalid or expired session"}, status_code=401)
+                await response(scope, receive, send)
+                return
 
             # Set current token info for tool calls
             self.server._current_token_info = token_info
 
-            return await self.transport.handle_post_message(
-                request.scope, request.receive, request._send
-            )
+            await self.transport.handle_post_message(scope, receive, send)
 
         async def health(request: Request) -> JSONResponse:
             """Health check endpoint."""
@@ -375,7 +373,7 @@ class HTTPMCPServer:
         routes = [
             Route("/health", health, methods=["GET"]),
             Route("/sse", handle_sse, methods=["GET"]),
-            Route("/messages/", handle_messages, methods=["POST"]),
+            Mount("/messages", app=handle_messages),
         ]
 
         return Starlette(routes=routes)
