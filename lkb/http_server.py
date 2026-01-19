@@ -1,7 +1,8 @@
-"""HTTP transport server for MCP with Bearer token authentication.
+"""HTTP transport server for MCP with token authentication.
 
 This module provides an HTTP server that serves the LKB MCP server with
-token-based authentication. A single HTTP server can serve multiple databases,
+token-based authentication. Tokens can be passed via Authorization header
+or query parameter. A single HTTP server can serve multiple databases,
 with the token determining which database to use.
 """
 
@@ -63,15 +64,20 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         if request.url.path == "/health":
             return await call_next(request)
 
-        # Extract Bearer token
+        # Extract token from Authorization header or query parameter
+        token = None
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]  # Remove 'Bearer ' prefix
+        elif "token" in request.query_params:
+            token = request.query_params["token"]
+
+        if not token:
             return JSONResponse(
-                {"error": "Missing or invalid Authorization header"},
+                {"error": "Missing token. Use Authorization header or ?token= parameter"},
                 status_code=401,
             )
 
-        token = auth_header[7:]  # Remove 'Bearer ' prefix
         token_info = self.verifier.verify(token)
 
         if not token_info:
