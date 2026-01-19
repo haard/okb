@@ -15,8 +15,6 @@ from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import CallToolResult, TextContent, Tool
 from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -52,44 +50,14 @@ WRITE_TOOLS = frozenset(
 )
 
 
-class TokenAuthMiddleware(BaseHTTPMiddleware):
-    """Middleware to verify Bearer tokens and attach auth context to requests."""
-
-    def __init__(self, app, verifier: LKBTokenVerifier):
-        super().__init__(app)
-        self.verifier = verifier
-
-    async def dispatch(self, request: Request, call_next):
-        # Allow health check without auth
-        if request.url.path == "/health":
-            return await call_next(request)
-
-        # Extract token from Authorization header or query parameter
-        token = None
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]  # Remove 'Bearer ' prefix
-        elif "token" in request.query_params:
-            token = request.query_params["token"]
-
-        if not token:
-            return JSONResponse(
-                {"error": "Missing token. Use Authorization header or ?token= parameter"},
-                status_code=401,
-            )
-
-        token_info = self.verifier.verify(token)
-
-        if not token_info:
-            return JSONResponse(
-                {"error": "Invalid or expired token"},
-                status_code=401,
-            )
-
-        # Attach token info to request state
-        request.state.token_info = token_info
-
-        return await call_next(request)
+def extract_token(request: Request) -> str | None:
+    """Extract token from Authorization header or query parameter."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    if "token" in request.query_params:
+        return request.query_params["token"]
+    return None
 
 
 class HTTPMCPServer:
@@ -98,6 +66,10 @@ class HTTPMCPServer:
     def __init__(self):
         self.knowledge_bases: dict[str, KnowledgeBase] = {}
         self.server = Server("knowledge-base")
+        # Single shared transport instance for all connections
+        self.transport = SseServerTransport("/messages/")
+        # Map session_id (hex string) -> token_info
+        self.session_tokens: dict[str, TokenInfo] = {}
         self._setup_handlers()
 
     def _get_db_url(self, db_name: str) -> str:
@@ -321,32 +293,78 @@ class HTTPMCPServer:
             return CallToolResult(content=[TextContent(type="text", text=f"Error: {e!s}")])
 
     def create_app(self) -> Starlette:
-        """Create the Starlette application with auth middleware."""
+        """Create the Starlette application."""
         verifier = LKBTokenVerifier(self._get_db_url)
 
         async def handle_sse(request: Request) -> Response:
             """Handle SSE connections for MCP."""
-            # Attach token info to server for tool calls
-            self.server._current_token_info = request.state.token_info
-
-            transport = SseServerTransport("/messages/")
-            async with transport.connect_sse(request.scope, request.receive, request._send) as (
-                read_stream,
-                write_stream,
-            ):
-                await self.server.run(
-                    read_stream, write_stream, self.server.create_initialization_options()
+            # Verify token
+            token = extract_token(request)
+            if not token:
+                return JSONResponse(
+                    {"error": "Missing token. Use Authorization header or ?token= parameter"},
+                    status_code=401,
                 )
+
+            token_info = verifier.verify(token)
+            if not token_info:
+                return JSONResponse(
+                    {"error": "Invalid or expired token"},
+                    status_code=401,
+                )
+
+            # Track existing sessions before connecting
+            existing_sessions = set(self.transport._read_stream_writers.keys())
+
+            async with self.transport.connect_sse(
+                request.scope, request.receive, request._send
+            ) as (read_stream, write_stream):
+                # Find the new session ID by comparing before/after
+                current_sessions = set(self.transport._read_stream_writers.keys())
+                new_sessions = current_sessions - existing_sessions
+                if not new_sessions:
+                    return JSONResponse(
+                        {"error": "Failed to establish session"},
+                        status_code=500,
+                    )
+                session_id = new_sessions.pop()
+                session_id_hex = session_id.hex
+
+                # Store token mapping for this session
+                self.session_tokens[session_id_hex] = token_info
+                self.server._current_token_info = token_info
+
+                try:
+                    await self.server.run(
+                        read_stream, write_stream, self.server.create_initialization_options()
+                    )
+                finally:
+                    # Clean up session on disconnect
+                    self.session_tokens.pop(session_id_hex, None)
 
             return Response()
 
         async def handle_messages(request: Request) -> Response:
             """Handle POST messages for MCP."""
-            # Attach token info to server for tool calls
-            self.server._current_token_info = request.state.token_info
+            # Look up session from query params
+            session_id = request.query_params.get("session_id")
+            if not session_id:
+                return JSONResponse(
+                    {"error": "Missing session_id"},
+                    status_code=400,
+                )
 
-            transport = SseServerTransport("/messages/")
-            return await transport.handle_post_message(
+            token_info = self.session_tokens.get(session_id)
+            if not token_info:
+                return JSONResponse(
+                    {"error": "Invalid or expired session"},
+                    status_code=401,
+                )
+
+            # Set current token info for tool calls
+            self.server._current_token_info = token_info
+
+            return await self.transport.handle_post_message(
                 request.scope, request.receive, request._send
             )
 
@@ -360,11 +378,7 @@ class HTTPMCPServer:
             Route("/messages/", handle_messages, methods=["POST"]),
         ]
 
-        middleware = [
-            Middleware(TokenAuthMiddleware, verifier=verifier),
-        ]
-
-        return Starlette(routes=routes, middleware=middleware)
+        return Starlette(routes=routes)
 
 
 def run_http_server(host: str = "127.0.0.1", port: int = 8080):
