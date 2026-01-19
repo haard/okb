@@ -669,9 +669,18 @@ def _save_sync_state(conn, source_name: str, db_name: str, state):
 @click.option("--full", is_flag=True, help="Ignore incremental state, do full sync")
 @click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
 @click.option("--db", "database", default=None, help="Database to sync into")
+@click.option("--folder", multiple=True, help="Filter to specific folder path (can repeat)")
+@click.option("--doc", "doc_ids", multiple=True, help="Sync specific document ID (can repeat)")
 @click.pass_context
 def sync_run(
-    ctx, sources: tuple[str, ...], sync_all: bool, full: bool, local: bool, database: str | None
+    ctx,
+    sources: tuple[str, ...],
+    sync_all: bool,
+    full: bool,
+    local: bool,
+    database: str | None,
+    folder: tuple[str, ...],
+    doc_ids: tuple[str, ...],
 ):
     """Sync from API sources.
 
@@ -718,6 +727,12 @@ def sync_run(
             if source_cfg is None:
                 click.echo(f"Skipping '{source_name}': not configured or disabled", err=True)
                 continue
+
+            # Merge CLI options into config (override config file values)
+            if folder:
+                source_cfg["folders"] = list(folder)
+            if doc_ids:
+                source_cfg["doc_ids"] = list(doc_ids)
 
             try:
                 source.configure(source_cfg)

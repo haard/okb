@@ -39,6 +39,7 @@ READ_ONLY_TOOLS = frozenset(
         "list_projects",
         "recent_documents",
         "get_actionable_items",
+        "get_database_info",
     }
 )
 
@@ -46,6 +47,7 @@ WRITE_TOOLS = frozenset(
     {
         "save_knowledge",
         "delete_knowledge",
+        "set_database_description",
     }
 )
 
@@ -282,6 +284,68 @@ class HTTPMCPServer:
                 )
                 return CallToolResult(
                     content=[TextContent(type="text", text=format_actionable_items(items))]
+                )
+
+            elif name == "get_database_info":
+                # Get config-based info for the token's database
+                token_info = getattr(self.server, "_current_token_info", None)
+                db_config = config.get_database(token_info.database if token_info else None)
+                info_parts = ["## Knowledge Base Info\n"]
+
+                if db_config.description:
+                    info_parts.append(f"**Description (config):** {db_config.description}")
+                if db_config.topics:
+                    info_parts.append(f"**Topics (config):** {', '.join(db_config.topics)}")
+
+                # LLM-enhanced metadata
+                try:
+                    metadata = kb.get_database_metadata()
+                    llm_desc = metadata.get("llm_description", {}).get("value")
+                    llm_topics = metadata.get("llm_topics", {}).get("value")
+                    if llm_desc:
+                        info_parts.append(f"**Description (LLM-enhanced):** {llm_desc}")
+                    if llm_topics:
+                        info_parts.append(f"**Topics (LLM-enhanced):** {', '.join(llm_topics)}")
+                except Exception:
+                    pass
+
+                sources = kb.list_sources()
+                if sources:
+                    info_parts.append("\n### Content Statistics")
+                    for s in sources:
+                        tokens = s.get("total_tokens") or 0
+                        info_parts.append(
+                            f"- **{s['source_type']}**: {s['document_count']} documents, "
+                            f"{s['chunk_count']} chunks (~{tokens:,} tokens)"
+                        )
+
+                projects = kb.list_projects()
+                if projects:
+                    info_parts.append(f"\n### Projects\n{', '.join(projects)}")
+
+                return CallToolResult(
+                    content=[TextContent(type="text", text="\n".join(info_parts))]
+                )
+
+            elif name == "set_database_description":
+                updated = []
+                if "description" in arguments:
+                    kb.set_database_metadata("llm_description", arguments["description"])
+                    updated.append("description")
+                if "topics" in arguments:
+                    kb.set_database_metadata("llm_topics", arguments["topics"])
+                    updated.append("topics")
+                if updated:
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text",
+                                text=f"Updated database metadata: {', '.join(updated)}",
+                            )
+                        ]
+                    )
+                return CallToolResult(
+                    content=[TextContent(type="text", text="No fields provided to update.")]
                 )
 
             else:

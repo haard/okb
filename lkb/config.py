@@ -55,6 +55,8 @@ class DatabaseConfig:
     url: str
     managed: bool = True  # Whether lkb manages this (Docker) or external
     default: bool = False
+    description: str | None = None  # Human-readable description for LLM context
+    topics: list[str] | None = None  # Topic keywords to help LLM route queries
 
     @property
     def database_name(self) -> str:
@@ -285,6 +287,8 @@ class Config:
                     url=db_cfg["url"],
                     managed=db_cfg.get("managed", True),
                     default=db_cfg.get("default", False),
+                    description=db_cfg.get("description"),
+                    topics=db_cfg.get("topics"),
                 )
                 if db_cfg.get("default"):
                     self.default_database = name
@@ -436,11 +440,16 @@ class Config:
         """Convert config to dictionary for display."""
         databases_dict = {}
         for name, db_cfg in self.databases.items():
-            databases_dict[name] = {
+            db_dict: dict[str, Any] = {
                 "url": db_cfg.url,
                 "managed": db_cfg.managed,
                 "default": db_cfg.default,
             }
+            if db_cfg.description:
+                db_dict["description"] = db_cfg.description
+            if db_cfg.topics:
+                db_dict["topics"] = db_cfg.topics
+            databases_dict[name] = db_dict
         return {
             "databases": databases_dict,
             "docker": {

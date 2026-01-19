@@ -431,6 +431,31 @@ class KnowledgeBase:
         conn.commit()
         return result is not None
 
+    def get_database_metadata(self) -> dict:
+        """Get LLM-enhanced database metadata."""
+        conn = self.get_connection()
+        results = conn.execute(
+            "SELECT key, value, source FROM database_metadata"
+        ).fetchall()
+        return {r["key"]: {"value": r["value"], "source": r["source"]} for r in results}
+
+    def set_database_metadata(self, key: str, value: Any) -> bool:
+        """Set or update LLM-enhanced database metadata."""
+        conn = self.get_connection()
+        conn.execute(
+            """
+            INSERT INTO database_metadata (key, value, source, updated_at)
+            VALUES (%s, %s, 'llm', NOW())
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                source = 'llm',
+                updated_at = NOW()
+            """,
+            (key, psycopg.types.json.Json(value)),
+        )
+        conn.commit()
+        return True
+
     def get_actionable_items(
         self,
         item_type: str | None = None,
@@ -506,6 +531,16 @@ class KnowledgeBase:
 
         results = conn.execute(sql, params).fetchall()
         return [dict(r) for r in results]
+
+
+def build_server_instructions(db_config) -> str | None:
+    """Build server instructions from database config and LLM metadata."""
+    parts = []
+    if db_config.description:
+        parts.append(db_config.description)
+    if db_config.topics:
+        parts.append(f"Topics: {', '.join(db_config.topics)}")
+    return " ".join(parts) if parts else None
 
 
 # Initialize server and knowledge base
@@ -763,6 +798,47 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="get_database_info",
+            description=(
+                "Get information about this knowledge base including its description, topics, "
+                "and content statistics. Call this first to understand what kind of information "
+                "is available and whether queries are appropriate for this knowledge base."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="set_database_description",
+            description=(
+                "Update the knowledge base description and topics based on your analysis of "
+                "its contents. Use this after exploring the database to help future sessions "
+                "understand what kind of information is stored here."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "A concise description of what this knowledge base contains "
+                            "(1-3 sentences, e.g., 'Personal notes on farming, including crop "
+                            "planning, livestock management, and equipment maintenance')"
+                        ),
+                    },
+                    "topics": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of topic keywords that characterize the content "
+                            "(e.g., ['farming', 'crops', 'livestock', 'equipment'])"
+                        ),
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -1004,6 +1080,70 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 content=[TextContent(type="text", text=format_actionable_items(items))]
             )
 
+        elif name == "get_database_info":
+            # Get config-based info
+            db_config = config.get_database()
+            info_parts = ["## Knowledge Base Info\n"]
+
+            # Config-defined description/topics
+            if db_config.description:
+                info_parts.append(f"**Description (config):** {db_config.description}")
+            if db_config.topics:
+                info_parts.append(f"**Topics (config):** {', '.join(db_config.topics)}")
+
+            # LLM-enhanced metadata
+            try:
+                metadata = kb.get_database_metadata()
+                llm_desc = metadata.get("llm_description", {}).get("value")
+                llm_topics = metadata.get("llm_topics", {}).get("value")
+                if llm_desc:
+                    info_parts.append(f"**Description (LLM-enhanced):** {llm_desc}")
+                if llm_topics:
+                    info_parts.append(f"**Topics (LLM-enhanced):** {', '.join(llm_topics)}")
+            except Exception:
+                pass  # Table may not exist yet
+
+            # Content stats
+            sources = kb.list_sources()
+            if sources:
+                info_parts.append("\n### Content Statistics")
+                for s in sources:
+                    tokens = s.get("total_tokens") or 0
+                    info_parts.append(
+                        f"- **{s['source_type']}**: {s['document_count']} documents, "
+                        f"{s['chunk_count']} chunks (~{tokens:,} tokens)"
+                    )
+
+            # Projects
+            projects = kb.list_projects()
+            if projects:
+                info_parts.append(f"\n### Projects\n{', '.join(projects)}")
+
+            return CallToolResult(
+                content=[TextContent(type="text", text="\n".join(info_parts))]
+            )
+
+        elif name == "set_database_description":
+            updated = []
+            if "description" in arguments:
+                kb.set_database_metadata("llm_description", arguments["description"])
+                updated.append("description")
+            if "topics" in arguments:
+                kb.set_database_metadata("llm_topics", arguments["topics"])
+                updated.append("topics")
+            if updated:
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=f"Updated database metadata: {', '.join(updated)}",
+                        )
+                    ]
+                )
+            return CallToolResult(
+                content=[TextContent(type="text", text="No fields provided to update.")]
+            )
+
         else:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
@@ -1011,14 +1151,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
         return CallToolResult(content=[TextContent(type="text", text=f"Error: {e!s}")])
 
 
-async def main(db_url: str | None = None):
+async def main(db_url: str | None = None, db_name: str | None = None):
     """Run the MCP server."""
     global kb
 
-    # Initialize knowledge base with provided URL or default
+    # Get database config
+    db_config = config.get_database(db_name)
+
+    # Initialize knowledge base with provided URL or from config
     if db_url is None:
-        db_url = config.db_url
+        db_url = db_config.url
     kb = KnowledgeBase(db_url)
+
+    # Set server instructions from config
+    server.instructions = build_server_instructions(db_config)
 
     # Pre-warm embedding model
     print("Warming up embedding model...", file=sys.stderr)
