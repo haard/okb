@@ -527,6 +527,67 @@ def ingest(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: st
 
 
 # =============================================================================
+# Rescan command
+# =============================================================================
+
+
+@main.command()
+@click.option("--db", "database", default=None, help="Database to rescan")
+@click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
+@click.option("--dry-run", is_flag=True, help="Show changes without executing")
+@click.option("--delete", "delete_missing", is_flag=True, help="Remove documents for missing files")
+@click.pass_context
+def rescan(ctx, database: str | None, local: bool, dry_run: bool, delete_missing: bool):
+    """Check indexed documents for freshness and re-ingest changed ones.
+
+    Compares stored file modification times against actual file mtimes.
+    Files that have changed are deleted and re-ingested. Missing files
+    are reported (use --delete to remove them from the index).
+
+    Examples:
+
+        lkb rescan              # Rescan default database
+
+        lkb rescan --dry-run    # Show what would change
+
+        lkb rescan --delete     # Also remove missing files
+
+        lkb rescan --db work    # Rescan specific database
+    """
+    from .rescan import Rescanner
+
+    # Get database URL from --db option or context
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    click.echo(f"Scanning database '{db_cfg.name}'...")
+    if dry_run:
+        click.echo("(dry run - no changes will be made)")
+
+    rescanner = Rescanner(db_cfg.url, use_modal=not local)
+    result = rescanner.rescan(dry_run=dry_run, delete_missing=delete_missing, verbose=True)
+
+    # Print summary
+    click.echo("")
+    summary_parts = []
+    if result.updated:
+        summary_parts.append(f"{len(result.updated)} updated")
+    if result.deleted:
+        summary_parts.append(f"{len(result.deleted)} deleted")
+    if result.missing:
+        summary_parts.append(f"{len(result.missing)} missing")
+    summary_parts.append(f"{result.unchanged} unchanged")
+
+    if result.errors:
+        summary_parts.append(f"{len(result.errors)} errors")
+
+    click.echo(f"Summary: {', '.join(summary_parts)}")
+
+    if result.missing and not delete_missing:
+        click.echo("Use --delete to remove missing files from the index.")
+
+
+# =============================================================================
 # Serve command
 # =============================================================================
 

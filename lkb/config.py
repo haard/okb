@@ -347,6 +347,28 @@ class Config:
             if "default_database" in local_config:
                 local_default_db = local_config["default_database"]
 
+        # Merge extension/security lists with defaults so local config extends defaults
+        # (not just global config file which may be empty)
+        list_fields_to_extend = [
+            ("extensions", ["skip_directories"]),
+            ("security", ["block_patterns", "skip_patterns"]),
+        ]
+        for section, keys in list_fields_to_extend:
+            if section in file_config:
+                for key in keys:
+                    if key in file_config[section]:
+                        # Prepend defaults to user's list (user values extend defaults)
+                        default_list = DEFAULTS[section][key]
+                        user_list = file_config[section][key]
+                        # Deduplicate while preserving order
+                        seen = set()
+                        merged = []
+                        for item in default_list + user_list:
+                            if item not in seen:
+                                seen.add(item)
+                                merged.append(item)
+                        file_config[section][key] = merged
+
         # Load databases: new multi-db format or legacy single database_url
         if "databases" in file_config:
             default_dbs = []
