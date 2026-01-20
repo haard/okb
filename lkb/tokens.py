@@ -74,6 +74,8 @@ def parse_token(token: str) -> tuple[str, str] | None:
     Returns:
         Tuple of (database, permissions) or None if invalid format
     """
+    if not token:
+        return None
     match = TOKEN_PATTERN.match(token)
     if match:
         return (match.group(1), match.group(2))

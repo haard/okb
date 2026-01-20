@@ -45,14 +45,19 @@ def _check_docker() -> bool:
 
 def _get_container_status() -> str | None:
     """Get the status of the lkb container. Returns None if not found."""
-    result = subprocess.run(
-        ["docker", "container", "inspect", "-f", "{{.State.Status}}", config.docker_container_name],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return None
+    try:
+        result = subprocess.run(
+            ["docker", "container", "inspect", "-f", "{{.State.Status}}",
+             config.docker_container_name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return None
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def _get_init_sql_path() -> Path:
@@ -74,23 +79,27 @@ def _wait_for_db_ready(timeout: int = 30) -> bool:
 
     click.echo("Waiting for database to be ready...", nl=False)
     for _ in range(timeout):
-        result = subprocess.run(
-            [
-                "docker",
-                "exec",
-                config.docker_container_name,
-                "pg_isready",
-                "-U",
-                "knowledge",
-                "-d",
-                "knowledge_base",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            click.echo(" ready.")
-            return True
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    config.docker_container_name,
+                    "pg_isready",
+                    "-U",
+                    "knowledge",
+                    "-d",
+                    "knowledge_base",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                click.echo(" ready.")
+                return True
+        except subprocess.TimeoutExpired:
+            pass
         click.echo(".", nl=False)
         time.sleep(1)
     click.echo(" timeout!")
@@ -175,11 +184,16 @@ def start():
     if status == "exited":
         # Container exists but is stopped, start it
         click.echo(f"Starting existing container '{config.docker_container_name}'...")
-        result = subprocess.run(
-            ["docker", "start", config.docker_container_name],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "start", config.docker_container_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            click.echo("Error: docker start timed out", err=True)
+            sys.exit(1)
         if result.returncode != 0:
             click.echo(f"Error starting container: {result.stderr}", err=True)
             sys.exit(1)
@@ -228,7 +242,11 @@ def start():
         "pgvector/pgvector:pg16",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        click.echo("Error: docker run timed out (may need to pull image manually)", err=True)
+        sys.exit(1)
     if result.returncode != 0:
         click.echo(f"Error creating container: {result.stderr}", err=True)
         sys.exit(1)
@@ -259,11 +277,16 @@ def stop():
         return
 
     click.echo(f"Stopping container '{config.docker_container_name}'...")
-    result = subprocess.run(
-        ["docker", "stop", config.docker_container_name],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "stop", config.docker_container_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        click.echo("Error: docker stop timed out", err=True)
+        sys.exit(1)
     if result.returncode != 0:
         click.echo(f"Error stopping container: {result.stderr}", err=True)
         sys.exit(1)
@@ -291,20 +314,25 @@ def status():
 
     if container_status == "running":
         # Try to get more info
-        result = subprocess.run(
-            [
-                "docker",
-                "exec",
-                config.docker_container_name,
-                "pg_isready",
-                "-U",
-                "knowledge",
-                "-d",
-                "knowledge_base",
-            ],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    config.docker_container_name,
+                    "pg_isready",
+                    "-U",
+                    "knowledge",
+                    "-d",
+                    "knowledge_base",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            click.echo("Database: check timed out")
+            return
         if result.returncode == 0:
             click.echo("Database: ready")
             # Show migration status
@@ -367,6 +395,7 @@ def destroy():
     subprocess.run(
         ["docker", "rm", "-f", config.docker_container_name],
         capture_output=True,
+        timeout=30,
     )
     click.echo(f"Removed container '{config.docker_container_name}'.")
 
@@ -374,6 +403,7 @@ def destroy():
     subprocess.run(
         ["docker", "volume", "rm", config.docker_volume_name],
         capture_output=True,
+        timeout=30,
     )
     click.echo(f"Removed volume '{config.docker_volume_name}'.")
 
