@@ -52,6 +52,9 @@ lkb ingest ~/notes ~/docs
 | `lkb sync list` | List available API sources (plugins) |
 | `lkb sync run <sources>` | Sync data from external APIs |
 | `lkb sync status` | Show last sync times |
+| `lkb rescan` | Check indexed files for changes, re-ingest stale |
+| `lkb rescan --dry-run` | Show what would change without executing |
+| `lkb rescan --delete` | Also remove documents for missing files |
 
 ## Architecture
 
@@ -293,6 +296,10 @@ plugins:
       enabled: true
       token: ${GITHUB_TOKEN}  # Resolved from environment
       repos: [owner/repo1, owner/repo2]
+    dropbox-paper:
+      enabled: true
+      token: ${DROPBOX_TOKEN}
+      folders: [/]            # Optional: filter to specific folders
 ```
 
 ## License

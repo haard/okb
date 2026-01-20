@@ -1,0 +1,238 @@
+#+TITLE: LKB Issues
+#+STARTUP: overview
+
+* HIGH Severity
+** TODO [#A] Database connection leak in KnowledgeBase
+:PROPERTIES:
+:FILE: mcp_server.py:129-134
+:TYPE: Resource Leak
+:END:
+
+Connection is created but never closed. Long-running MCP/HTTP servers will exhaust database
+connections.
+
+#+begin_src python
+def get_connection(self):
+    if self._conn is None or self._conn.closed:
+        self._conn = psycopg.connect(self.db_url, row_factory=dict_row)
+        register_vector(self._conn)
+    return self._conn
+#+end_src
+
+*Fix:* Use connection pooling, implement =__del__= with explicit close, or use context manager
+pattern for each query.
+
+** TODO [#A] SQL LIKE pattern injection in rescan
+:PROPERTIES:
+:FILE: rescan.py:137
+:TYPE: Security
+:END:
+
+String concatenation =source_path + "::%"= - if path contains =%= or =_= chars, LIKE could match
+unintended rows and delete wrong documents.
+
+#+begin_src python
+result = conn.execute(
+    """DELETE FROM documents
+       WHERE source_path = %s OR source_path LIKE %s""",
+    (source_path, source_path + "::%"),
+)
+#+end_src
+
+*Fix:* Escape special LIKE characters (=%= and =_=) before concatenation, or use PostgreSQL's
+=escape= clause.
+
+* MEDIUM Severity
+** TODO [#B] Race condition in ingest deduplication
+:PROPERTIES:
+:FILE: ingest.py:1375-1415
+:TYPE: Concurrency
+:END:
+
+Check-then-delete pattern without transaction lock. Between checking for existing hash and
+checking for existing path, another process could modify the database.
+
+*Impact:* Two concurrent ingests of the same file could both delete and insert, causing duplicate
+entries or lost data.
+
+*Fix:* Use a single atomic operation or explicit transaction with row locking.
+
+** TODO [#B] No subprocess timeout in Docker operations
+:PROPERTIES:
+:FILE: cli.py:77-96
+:TYPE: Robustness
+:END:
+
+=subprocess.run()= for Docker operations has no timeout. If Docker daemon hangs, CLI hangs
+indefinitely.
+
+*Fix:* Add =timeout=5= parameter to subprocess.run() calls.
+
+** TODO [#B] Missing null check in parse_token
+:PROPERTIES:
+:FILE: tokens.py:68-80
+:TYPE: Robustness
+:END:
+
+=parse_token()= will raise AttributeError if passed None instead of returning None.
+
+#+begin_src python
+def parse_token(token: str) -> tuple[str, str] | None:
+    match = TOKEN_PATTERN.match(token)  # Crashes if token is None
+#+end_src
+
+*Fix:* Add =if not token: return None= at start.
+
+** TODO [#B] Missing error handling on database connect
+:PROPERTIES:
+:FILE: tokens.py:116-150
+:TYPE: Error Handling
+:END:
+
+No try-except around =psycopg.connect()= in =list_tokens()=. Connection failures bubble up with
+unhelpful error messages.
+
+*Fix:* Wrap connection and provide helpful error message about database connectivity.
+
+** TODO [#B] Token commit failure not checked
+:PROPERTIES:
+:FILE: tokens.py:104-111
+:TYPE: Data Consistency
+:END:
+
+If =conn.commit()= raises an exception in =create_token()=, the function still returns the token,
+but it wasn't saved.
+
+*Impact:* Users get tokens that don't work.
+
+*Fix:* Ensure token is only returned after successful commit.
+
+** TODO [#B] Empty chunks not validated
+:PROPERTIES:
+:FILE: ingest.py:1279
+:TYPE: Data Quality
+:END:
+
+If =chunk_text_generator= yields empty strings, they're still added to chunks. No validation that
+chunks are non-empty.
+
+*Impact:* Database gets polluted with empty chunks that waste space and slow queries.
+
+*Fix:* Filter out empty chunks before appending.
+
+** TODO [#B] Database name exposure in error message
+:PROPERTIES:
+:FILE: config.py:498-506
+:TYPE: Security
+:END:
+
+Error message exposes all configured database names, which might be sensitive.
+
+#+begin_src python
+raise ValueError(f"Unknown database: {name}. Available: {list(self.databases.keys())}")
+#+end_src
+
+*Fix:* Return generic "database not found" to user, log full details.
+
+** TODO [#B] Unhandled Docker check errors
+:PROPERTIES:
+:FILE: cli.py:66
+:TYPE: Error Handling
+:END:
+
+=_get_container_status()= silently returns None for both "Docker not installed" and "container
+doesn't exist". Users get confusing error messages.
+
+*Fix:* Distinguish between Docker unavailable and container not found.
+
+** TODO [#B] Poor JSON error messages in CLI
+:PROPERTIES:
+:FILE: cli.py:471
+:TYPE: UX
+:END:
+
+When =--metadata= JSON parsing fails, error message doesn't show correct format.
+
+*Fix:* Add example to error message: ="Expected JSON object, e.g. '{\"key\": \"value\"}'"=
+
+** TODO [#B] Plugin parser return type inconsistency
+:PROPERTIES:
+:FILE: ingest.py:1150-1184
+:TYPE: Type Safety
+:END:
+
+=parse_document()= returns =list[Document]=, but plugin protocol says parsers return single
+=Document=. The wrapper adds =[parser.parse(...)]=.
+
+*Fix:* Clarify in plugin protocol whether parsers return Document or list[Document].
+
+** TODO [#B] Environment variable injection risk
+:PROPERTIES:
+:FILE: config.py:15-47
+:TYPE: Security
+:END:
+
+=${VAR}= resolution in config values has no validation. Low risk in typical setups, but could be
+problematic in multi-tenant deployments where environment is partially user-controlled.
+
+*Fix:* Document the trust model; consider allowlist for sensitive config keys.
+
+* LOW Severity
+** TODO [#C] Bare exception swallows errors
+:PROPERTIES:
+:FILE: http_server.py:309-310
+:TYPE: Error Handling
+:END:
+
+#+begin_src python
+except Exception:
+    pass
+#+end_src
+
+Silently swallows all exceptions including real errors during metadata retrieval.
+
+*Fix:* At minimum log a warning.
+
+** TODO [#C] Path normalization inconsistency
+:PROPERTIES:
+:FILE: config.py:520
+:TYPE: Logic Error
+:END:
+
+=should_skip_path()= behaves differently with relative vs absolute paths because =path.parts=
+doesn't include root for relative paths.
+
+*Fix:* Always resolve paths to absolute before checking.
+
+** TODO [#C] Over-broad exception handling in rescan
+:PROPERTIES:
+:FILE: rescan.py:213-216
+:TYPE: Error Handling
+:END:
+
+Catches =Exception= which includes KeyboardInterrupt. User can't interrupt a long-running rescan
+with Ctrl+C.
+
+*Fix:* Catch specific exceptions or use =except Exception as e: if isinstance(e, KeyboardInterrupt): raise=.
+
+** TODO [#C] Private attribute access in http_server
+:PROPERTIES:
+:FILE: http_server.py:381
+:TYPE: Maintainability
+:END:
+
+Accesses =transport._read_stream_writers= - a private attribute that could change in future mcp
+library versions.
+
+*Fix:* Use public API if available, or document the dependency and pin mcp version.
+
+** TODO [#C] Silent fallback on invalid date
+:PROPERTIES:
+:FILE: mcp_server.py:71-72
+:TYPE: Error Handling
+:END:
+
+=format_relative_time()= returns empty string for unexpected types rather than warning. Could hide
+data quality issues.
+
+*Fix:* Log warning when returning empty fallback.
