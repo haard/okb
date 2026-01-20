@@ -2,7 +2,7 @@
 #+STARTUP: overview
 
 * HIGH Severity
-** TODO [#A] Database connection leak in KnowledgeBase
+** DONE [#A] Database connection leak in KnowledgeBase
 :PROPERTIES:
 :FILE: mcp_server.py:129-134
 :TYPE: Resource Leak
@@ -22,7 +22,7 @@ def get_connection(self):
 *Fix:* Use connection pooling, implement =__del__= with explicit close, or use context manager
 pattern for each query.
 
-** TODO [#A] SQL LIKE pattern injection in rescan
+** DONE [#A] SQL LIKE pattern injection in rescan
 :PROPERTIES:
 :FILE: rescan.py:137
 :TYPE: Security
@@ -57,7 +57,7 @@ entries or lost data.
 
 *Fix:* Use a single atomic operation or explicit transaction with row locking.
 
-** TODO [#B] No subprocess timeout in Docker operations
+** DONE [#B] No subprocess timeout in Docker operations
 :PROPERTIES:
 :FILE: cli.py:77-96
 :TYPE: Robustness
@@ -68,7 +68,7 @@ indefinitely.
 
 *Fix:* Add =timeout=5= parameter to subprocess.run() calls.
 
-** TODO [#B] Missing null check in parse_token
+** DONE [#B] Missing null check in parse_token
 :PROPERTIES:
 :FILE: tokens.py:68-80
 :TYPE: Robustness
