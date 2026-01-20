@@ -87,6 +87,59 @@ def load_config_file() -> dict[str, Any]:
     return {}
 
 
+def find_local_config(start_path: Path | None = None) -> Path | None:
+    """Find .lkbconf.yaml by walking up from start_path (default: CWD)."""
+    path = (start_path or Path.cwd()).resolve()
+    while path != path.parent:
+        local_config = path / ".lkbconf.yaml"
+        if local_config.exists():
+            return local_config
+        path = path.parent
+    return None
+
+
+def load_local_config() -> dict[str, Any]:
+    """Load local config overlay if present."""
+    local_path = find_local_config()
+    if local_path:
+        with open(local_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def merge_configs(base: dict, overlay: dict, path: str = "") -> dict:
+    """Merge overlay config into base. Lists extend, dicts deep-merge, scalars replace.
+
+    Raises ValueError if types don't match (e.g., list vs dict).
+    """
+    result = dict(base)
+    for key, value in overlay.items():
+        key_path = f"{path}.{key}" if path else key
+        if key in result:
+            base_val = result[key]
+            # Check for type mismatches between collections
+            if isinstance(value, list) and not isinstance(base_val, list):
+                raise ValueError(
+                    f"Config type mismatch at '{key_path}': "
+                    f"global config has {type(base_val)}, local config has list"
+                )
+            if isinstance(value, dict) and not isinstance(base_val, dict):
+                raise ValueError(
+                    f"Config type mismatch at '{key_path}': "
+                    f"global config has {type(base_val)}, local config has dict"
+                )
+            # Merge by type
+            if isinstance(value, list):
+                result[key] = base_val + value  # Extend lists
+            elif isinstance(value, dict):
+                result[key] = merge_configs(base_val, value, key_path)  # Deep merge dicts
+            else:
+                result[key] = value  # Replace scalar
+        else:
+            result[key] = value
+    return result
+
+
 # Default configuration values
 DEFAULTS = {
     "databases": {
@@ -237,6 +290,9 @@ class Config:
     databases: dict[str, DatabaseConfig] = field(default_factory=dict)
     default_database: str | None = None
 
+    # Local config overlay path (set in __post_init__ if found)
+    local_config_path: Path | None = None
+
     # Docker
     docker_port: int = 5433
     docker_container_name: str = "lkb-pgvector"
@@ -279,6 +335,18 @@ class Config:
         """Load configuration from file and environment."""
         file_config = load_config_file()
 
+        # Load and merge local config overlay (.lkbconf.yaml)
+        local_path = find_local_config()
+        local_default_db: str | None = None
+        if local_path:
+            self.local_config_path = local_path
+            local_config = load_local_config()
+            file_config = merge_configs(file_config, local_config)
+
+            # Save local config's default_database to apply after database loading
+            if "default_database" in local_config:
+                local_default_db = local_config["default_database"]
+
         # Load databases: new multi-db format or legacy single database_url
         if "databases" in file_config:
             for name, db_cfg in file_config["databases"].items():
@@ -310,6 +378,10 @@ class Config:
                 default=True,
             )
             self.default_database = "default"
+
+        # Apply local config's default_database override (takes precedence over global)
+        if local_default_db:
+            self.default_database = local_default_db
 
         # Docker settings
         docker_cfg = file_config.get("docker", {})
@@ -450,8 +522,13 @@ class Config:
             if db_cfg.topics:
                 db_dict["topics"] = db_cfg.topics
             databases_dict[name] = db_dict
+
+        result: dict[str, Any] = {}
+        if self.local_config_path:
+            result["local_config"] = str(self.local_config_path)
+        result["databases"] = databases_dict
         return {
-            "databases": databases_dict,
+            **result,
             "docker": {
                 "port": self.docker_port,
                 "container_name": self.docker_container_name,

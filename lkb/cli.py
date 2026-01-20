@@ -329,7 +329,12 @@ def migrate(name):
 
     If NAME is provided, migrate only that database.
     Otherwise, migrate all configured databases.
+
+    Creates missing databases automatically for managed databases.
     """
+    # Ensure managed databases exist before migrating
+    _ensure_databases_exist()
+
     if name:
         # Migrate specific database
         try:
