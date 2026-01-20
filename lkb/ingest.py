@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import sys
 from collections.abc import Generator
@@ -1186,64 +1187,73 @@ def collect_documents(
     root: Path,
     extra_metadata: dict | None = None,
 ) -> Generator[Document, None, None]:
-    """Recursively collect documents from a directory."""
+    """Recursively collect documents from a directory, pruning ignored directories."""
     print(f"Scanning {root}...", file=sys.stderr, flush=True)
     scanned = 0
     collected = 0
-    skipped_dir = 0
     skipped_ext = 0
 
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        # Prune ignored directories in-place (modifying dirnames affects traversal)
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d not in config.skip_directories
+        ]
 
-        scanned += 1
-        if scanned % 500 == 0:
-            print(f"  {scanned} files scanned, {collected} documents found...", file=sys.stderr, flush=True)
+        for filename in filenames:
+            path = Path(dirpath) / filename
 
-        if config.should_skip_path(path):
-            skipped_dir += 1
-            continue
+            scanned += 1
+            if scanned % 500 == 0:
+                print(
+                    f"  {scanned} files scanned, {collected} documents found...",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
-        if path.suffix not in config.all_extensions:
-            skipped_ext += 1
-            continue
-
-        # Check filename-based skip/block patterns first (before reading content)
-        skip_check = check_file_skip(path)
-        if skip_check.should_skip:
-            prefix = "BLOCKED" if skip_check.is_security else "Skipping"
-            print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
-            continue
-
-        try:
-            docs = parse_document(path, extra_metadata)
-            if not docs:
+            if path.suffix not in config.all_extensions:
+                skipped_ext += 1
                 continue
 
-            # Content-based checks on the primary (file) document
-            primary_doc = docs[0]
-            if config.scan_content:
-                skip_check = check_file_skip(path, primary_doc.content)
-                if skip_check.should_skip:
-                    prefix = "BLOCKED" if skip_check.is_security else "Skipping"
-                    print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
+            # Check filename-based skip/block patterns first (before reading content)
+            skip_check = check_file_skip(path)
+            if skip_check.should_skip:
+                prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
+                continue
+
+            try:
+                docs = parse_document(path, extra_metadata)
+                if not docs:
                     continue
 
-            # Capture file mtime for staleness tracking
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-            mtime_iso = mtime.isoformat()
+                # Content-based checks on the primary (file) document
+                primary_doc = docs[0]
+                if config.scan_content:
+                    skip_check = check_file_skip(path, primary_doc.content)
+                    if skip_check.should_skip:
+                        prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                        print(f"{prefix}: {path} ({skip_check.reason})", file=sys.stderr)
+                        continue
 
-            # Yield all documents from this file
-            for doc in docs:
-                doc.metadata.extra["file_modified_at"] = mtime_iso
-                collected += 1
-                yield doc
-        except Exception as e:
-            print(f"Error parsing {path}: {e}", file=sys.stderr)
+                # Capture file mtime for staleness tracking
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+                mtime_iso = mtime.isoformat()
+
+                # Yield all documents from this file
+                for doc in docs:
+                    doc.metadata.extra["file_modified_at"] = mtime_iso
+                    collected += 1
+                    yield doc
+            except Exception as e:
+                print(f"Error parsing {path}: {e}", file=sys.stderr)
 
     if scanned >= 1000:
-        print(f"Scan complete: {scanned} files, {skipped_dir} in skipped dirs, {skipped_ext} wrong extension", file=sys.stderr, flush=True)
+        print(
+            f"Scan complete: {scanned} files, {skipped_ext} wrong extension",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def create_chunks(doc: Document) -> list[Chunk]:
