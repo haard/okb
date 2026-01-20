@@ -349,6 +349,7 @@ class Config:
 
         # Load databases: new multi-db format or legacy single database_url
         if "databases" in file_config:
+            default_dbs = []
             for name, db_cfg in file_config["databases"].items():
                 self.databases[name] = DatabaseConfig(
                     name=name,
@@ -359,7 +360,14 @@ class Config:
                     topics=db_cfg.get("topics"),
                 )
                 if db_cfg.get("default"):
+                    default_dbs.append(name)
                     self.default_database = name
+            # Validate only one default
+            if len(default_dbs) > 1:
+                raise ValueError(
+                    f"Multiple databases marked as default: {default_dbs}. "
+                    "Only one database can have 'default: true'."
+                )
             # If no default was marked, use first database
             if not self.default_database and self.databases:
                 first_name = next(iter(self.databases))

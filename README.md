@@ -95,21 +95,45 @@ lkb config init
 
 Example config:
 ```yaml
-database_url: postgresql://knowledge:localdev@localhost:5433/knowledge_base
+databases:
+  personal:
+    url: postgresql://knowledge:localdev@localhost:5433/personal_kb
+    default: true    # Used when --db not specified (only one can be default)
+    managed: true    # lkb manages via Docker
+  work:
+    url: postgresql://knowledge:localdev@localhost:5433/work_kb
+    managed: true
+
 docker:
   port: 5433
   container_name: lkb-pgvector
-  volume_name: lkb-pgvector-data
-  password: localdev
+
 chunking:
   chunk_size: 512
   chunk_overlap: 64
 ```
 
+Use `--db <name>` to target a specific database with any command.
+
 Environment variables override config file settings:
 - `KB_DATABASE_URL` - Database connection string
 - `LKB_DOCKER_PORT` - Docker port mapping
 - `LKB_CONTAINER_NAME` - Docker container name
+
+### Project-Local Config
+
+Override global config per-project with `.lkbconf.yaml` (searched from CWD upward):
+
+```yaml
+# .lkbconf.yaml
+default_database: work  # Use 'work' db in this project
+
+extensions:
+  skip_directories:     # Extends global list
+    - test_fixtures
+```
+
+Merge: scalars replace, lists extend, dicts deep-merge.
 
 ## Claude Code MCP Config
 
