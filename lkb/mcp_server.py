@@ -133,6 +133,22 @@ class KnowledgeBase:
             register_vector(self._conn)
         return self._conn
 
+    def close(self):
+        """Close the database connection if open."""
+        if self._conn is not None and not self._conn.closed:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def __del__(self):
+        self.close()
+
     def semantic_search(
         self,
         query: str,
