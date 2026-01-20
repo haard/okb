@@ -1334,14 +1334,18 @@ class Ingester:
 
     @property
     def embedder(self):
-        """Lazy-load Modal embedder."""
+        """Lazy-load embedder, falling back to local if Modal unavailable."""
         if self._embedder is None:
             if self.use_modal:
-                import modal
+                try:
+                    import modal
 
-                self._embedder = modal.Cls.from_name("knowledge-embedder", "Embedder")()
-            else:
-                # Fall back to local embedding
+                    self._embedder = modal.Cls.from_name("knowledge-embedder", "Embedder")()
+                except Exception as e:
+                    print(f"Modal unavailable ({e}), using local CPU embedding", file=sys.stderr)
+                    self.use_modal = False  # Update flag for embed_batch call path
+
+            if not self.use_modal:
                 from .local_embedder import embed_document
 
                 class LocalEmbedder:
