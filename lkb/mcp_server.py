@@ -447,6 +447,135 @@ class KnowledgeBase:
         conn.commit()
         return result is not None
 
+    def save_todo(
+        self,
+        title: str,
+        content: str | None = None,
+        due_date: str | None = None,
+        priority: str | None = None,
+        project: str | None = None,
+        tags: list[str] | None = None,
+    ) -> dict:
+        """
+        Create a TODO item in the knowledge base.
+
+        Args:
+            title: TODO item title
+            content: Optional description/notes
+            due_date: Due date (ISO date or 'today'/'tomorrow')
+            priority: Priority ('A'/'B'/'C' or 1-5, 1=highest)
+            project: Project name
+            tags: List of tags
+
+        Returns:
+            Dict with status and saved document info
+        """
+        conn = self.get_connection()
+
+        # Generate unique source path
+        todo_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        source_path = f"claude://todo/{timestamp}-{todo_id}"
+
+        # Parse priority: A=1, B=2, C=3, or numeric 1-5
+        parsed_priority = None
+        if priority:
+            priority_map = {"A": 1, "B": 2, "C": 3, "a": 1, "b": 2, "c": 3}
+            if priority.upper() in priority_map:
+                parsed_priority = priority_map[priority.upper()]
+            elif priority.isdigit() and 1 <= int(priority) <= 5:
+                parsed_priority = int(priority)
+
+        # Parse due_date
+        parsed_due_date = None
+        if due_date:
+            date_range = parse_date_range(due_date)
+            if date_range:
+                parsed_due_date = date_range[0]  # Use start of range
+            else:
+                # Try ISO format
+                try:
+                    parsed_due_date = datetime.fromisoformat(due_date.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+
+        # Build metadata
+        metadata = {"source": "claude"}
+        if tags:
+            metadata["tags"] = tags
+        if project:
+            metadata["project"] = project
+
+        # Use content if provided, otherwise use title
+        doc_content = content if content else title
+
+        # Content hash for deduplication
+        content_hash = hashlib.sha256(f"{title}:{doc_content}".encode()).hexdigest()[:16]
+
+        # Build contextual embedding text
+        embedding_parts = [f"TODO: {title}"]
+        if project:
+            embedding_parts.append(f"Project: {project}")
+        if tags:
+            embedding_parts.append(f"Topics: {', '.join(tags)}")
+        if content:
+            embedding_parts.append(f"Details: {content}")
+        embedding_text = "\n".join(embedding_parts)
+
+        # Generate embedding
+        embedding = embed_document(embedding_text)
+
+        # Insert document with structured fields
+        doc_id = conn.execute(
+            """
+            INSERT INTO documents (
+                source_path, source_type, title, content, metadata, content_hash,
+                status, priority, due_date
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                source_path,
+                "claude-todo",
+                title,
+                doc_content,
+                psycopg.types.json.Json(metadata),
+                content_hash,
+                "pending",
+                parsed_priority,
+                parsed_due_date,
+            ),
+        ).fetchone()["id"]
+
+        # Insert single chunk
+        token_count = len(doc_content) // 4  # Approximate
+        conn.execute(
+            """
+            INSERT INTO chunks (document_id, chunk_index, content, embedding_text, embedding, token_count, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                doc_id,
+                0,
+                doc_content,
+                embedding_text,
+                embedding,
+                token_count,
+                psycopg.types.json.Json({}),
+            ),
+        )
+
+        conn.commit()
+
+        return {
+            "status": "saved",
+            "source_path": source_path,
+            "title": title,
+            "priority": parsed_priority,
+            "due_date": str(parsed_due_date) if parsed_due_date else None,
+        }
+
     def get_database_metadata(self) -> dict:
         """Get LLM-enhanced database metadata."""
         conn = self.get_connection()
@@ -855,6 +984,47 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="add_todo",
+            description=(
+                "Create a TODO item in the knowledge base. Use this to capture tasks, "
+                "action items, or reminders that come up during conversation. "
+                "The TODO will be queryable via get_actionable_items."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "TODO item title",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Optional description or notes",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": (
+                            "Due date: ISO date (YYYY-MM-DD), 'today', or 'tomorrow'"
+                        ),
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "Priority: 'A'/'B'/'C' or 1-5 (1=highest)",
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Project name",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Categorization tags",
+                    },
+                },
+                "required": ["title"],
+            },
+        ),
     ]
 
 
@@ -1158,6 +1328,28 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 )
             return CallToolResult(
                 content=[TextContent(type="text", text="No fields provided to update.")]
+            )
+
+        elif name == "add_todo":
+            result = kb.save_todo(
+                title=arguments["title"],
+                content=arguments.get("content"),
+                due_date=arguments.get("due_date"),
+                priority=arguments.get("priority"),
+                project=arguments.get("project"),
+                tags=arguments.get("tags"),
+            )
+            parts = [
+                "TODO created:",
+                f"- Title: {result['title']}",
+                f"- Path: `{result['source_path']}`",
+            ]
+            if result.get("priority"):
+                parts.append(f"- Priority: P{result['priority']}")
+            if result.get("due_date"):
+                parts.append(f"- Due: {result['due_date']}")
+            return CallToolResult(
+                content=[TextContent(type="text", text="\n".join(parts))]
             )
 
         else:

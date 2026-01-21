@@ -48,6 +48,7 @@ WRITE_TOOLS = frozenset(
         "save_knowledge",
         "delete_knowledge",
         "set_database_description",
+        "add_todo",
     }
 )
 
