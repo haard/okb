@@ -31,7 +31,9 @@ from psycopg.rows import dict_row
 from .config import config
 
 
-def read_text_with_fallback(path: Path, encodings: tuple[str, ...] = ("utf-8", "windows-1252", "latin-1")) -> str:
+def read_text_with_fallback(
+    path: Path, encodings: tuple[str, ...] = ("utf-8", "windows-1252", "latin-1")
+) -> str:
     """Read text file trying multiple encodings in order."""
     for encoding in encodings:
         try:
@@ -87,6 +89,7 @@ def is_minified(content: str, max_line_length: int = 1000) -> bool:
 
 class FileSkipReason:
     """Result of file skip check."""
+
     def __init__(self, should_skip: bool, reason: str = "", is_security: bool = False):
         self.should_skip = should_skip
         self.reason = reason
@@ -116,7 +119,9 @@ def check_file_skip(path: Path, content: str | None = None) -> FileSkipReason:
             return FileSkipReason(True, f"contains {secret_type}", is_security=True)
 
         # Check for minified JS/CSS
-        if path.suffix in (".js", ".css") and is_minified(content, config.max_line_length_for_minified):
+        if path.suffix in (".js", ".css") and is_minified(
+            content, config.max_line_length_for_minified
+        ):
             return FileSkipReason(True, "appears to be minified", is_security=False)
 
     return FileSkipReason(False)
@@ -796,9 +801,7 @@ def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
     )
 
 
-def parse_org_with_todos(
-    path: Path, extra_metadata: dict | None = None
-) -> list[Document]:
+def parse_org_with_todos(path: Path, extra_metadata: dict | None = None) -> list[Document]:
     """
     Parse an org-mode file into multiple Documents.
 
@@ -814,9 +817,7 @@ def parse_org_with_todos(
     todo_items = extract_org_todo_items(content)
 
     # Convert TODO items to Documents
-    todo_docs = [
-        org_todo_to_document(item, path, file_doc.metadata) for item in todo_items
-    ]
+    todo_docs = [org_todo_to_document(item, path, file_doc.metadata) for item in todo_items]
 
     # File document first, then TODO documents
     return [file_doc] + todo_docs
@@ -889,7 +890,9 @@ def parse_url(url: str, extra_metadata: dict | None = None) -> Document:
     try:
         import trafilatura
     except ImportError:
-        raise ImportError("trafilatura is required for URL ingestion. Install with: pip install local-kb[web]")
+        raise ImportError(
+            "trafilatura is required for URL ingestion. Install with: pip install local-kb[web]"
+        )
 
     # Fetch and extract content
     downloaded = trafilatura.fetch_url(url)
@@ -1196,8 +1199,7 @@ def collect_documents(
     for dirpath, dirnames, filenames in os.walk(root, topdown=True):
         # Prune ignored directories in-place (modifying dirnames affects traversal)
         dirnames[:] = [
-            d for d in dirnames
-            if not d.startswith(".") and d not in config.skip_directories
+            d for d in dirnames if not d.startswith(".") and d not in config.skip_directories
         ]
 
         for filename in filenames:
@@ -1277,6 +1279,8 @@ def create_chunks(doc: Document) -> list[Chunk]:
         chunk_index = 0
         for section_header, section_content in doc.sections:
             for _, section_chunk in chunk_text_generator(section_content):
+                if not section_chunk.strip():
+                    continue  # Skip empty chunks
                 embedding_text = build_embedding_context(
                     chunk_text=section_chunk,
                     doc_title=doc.title,
@@ -1299,6 +1303,8 @@ def create_chunks(doc: Document) -> list[Chunk]:
                 chunk_index += 1
     else:
         for chunk_index, chunk_content in chunk_text(doc.content):
+            if not chunk_content.strip():
+                continue  # Skip empty chunks
             embedding_text = build_embedding_context(
                 chunk_text=chunk_content,
                 doc_title=doc.title,
@@ -1385,9 +1391,10 @@ class Ingester:
                 else:
                     base_path = doc.source_path
 
-                # Check if document exists and unchanged
+                # Check if document exists and unchanged (FOR UPDATE to prevent race)
                 existing = conn.execute(
-                    "SELECT id FROM documents WHERE content_hash = %s", (doc_hash,)
+                    "SELECT id FROM documents WHERE content_hash = %s FOR UPDATE",
+                    (doc_hash,),
                 ).fetchone()
 
                 if existing:
@@ -1414,9 +1421,10 @@ class Ingester:
                         print(f"  Deleted {len(deleted)} derived documents from {base_path}")
                     cleaned_derived.add(base_path)
 
-                # Check if same path exists with different hash (updated file)
+                # Check if same path exists with different hash (FOR UPDATE to prevent race)
                 old_doc = conn.execute(
-                    "SELECT id FROM documents WHERE source_path = %s", (doc.source_path,)
+                    "SELECT id FROM documents WHERE source_path = %s FOR UPDATE",
+                    (doc.source_path,),
                 ).fetchone()
 
                 if old_doc:

@@ -98,19 +98,25 @@ def create_token(
 
     Returns:
         The plaintext token (only returned once, not stored)
+
+    Raises:
+        RuntimeError: If token could not be saved to database
     """
     token = generate_token(database, permissions)
     token_hash = hash_token(token)
 
-    with psycopg.connect(db_url) as conn:
-        conn.execute(
-            """
-            INSERT INTO tokens (token_hash, permissions, description)
-            VALUES (%s, %s, %s)
-            """,
-            (token_hash, permissions, description),
-        )
-        conn.commit()
+    try:
+        with psycopg.connect(db_url) as conn:
+            conn.execute(
+                """
+                INSERT INTO tokens (token_hash, permissions, description)
+                VALUES (%s, %s, %s)
+                """,
+                (token_hash, permissions, description),
+            )
+            conn.commit()
+    except psycopg.Error as e:
+        raise RuntimeError(f"Failed to save token to database: {e}") from e
 
     return token
 
@@ -123,33 +129,41 @@ def list_tokens(db_url: str) -> list[TokenInfo]:
 
     Returns:
         List of TokenInfo objects
+
+    Raises:
+        RuntimeError: If database connection fails
     """
-    with psycopg.connect(db_url, row_factory=dict_row) as conn:
-        # Extract database name from URL for display
-        from urllib.parse import urlparse
+    # Extract database name from URL for display
+    from urllib.parse import urlparse
 
-        parsed = urlparse(db_url)
-        db_name = parsed.path.lstrip("/") or "default"
+    parsed = urlparse(db_url)
+    db_name = parsed.path.lstrip("/") or "default"
 
-        results = conn.execute(
-            """
-            SELECT token_hash, permissions, description, created_at, last_used_at
-            FROM tokens
-            ORDER BY created_at DESC
-            """
-        ).fetchall()
+    try:
+        with psycopg.connect(db_url, row_factory=dict_row) as conn:
+            results = conn.execute(
+                """
+                SELECT token_hash, permissions, description, created_at, last_used_at
+                FROM tokens
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
 
-        return [
-            TokenInfo(
-                token_hash=r["token_hash"],
-                database=db_name,
-                permissions=r["permissions"],
-                description=r["description"],
-                created_at=r["created_at"],
-                last_used_at=r["last_used_at"],
-            )
-            for r in results
-        ]
+            return [
+                TokenInfo(
+                    token_hash=r["token_hash"],
+                    database=db_name,
+                    permissions=r["permissions"],
+                    description=r["description"],
+                    created_at=r["created_at"],
+                    last_used_at=r["last_used_at"],
+                )
+                for r in results
+            ]
+    except psycopg.OperationalError as e:
+        raise RuntimeError(
+            f"Failed to connect to database. Ensure the database is running: {e}"
+        ) from e
 
 
 def delete_token(db_url: str, token_or_prefix: str) -> bool:

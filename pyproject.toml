@@ -1,6 +1,6 @@
 [project]
 name = "local-kb"
-version = "0.1.0"
+version = "1.0.0"
 description = "Personal knowledge base with semantic search for LLMs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,11 @@ dependencies = [
 pdf = ["pymupdf>=1.23.0"]
 docx = ["python-docx>=1.1.0"]
 web = ["trafilatura>=1.6.0"]
+all = [
+    "pymupdf>=1.23.0",
+    "python-docx>=1.1.0",
+    "trafilatura>=1.6.0",
+]
 dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",
