@@ -579,9 +579,7 @@ class KnowledgeBase:
     def get_database_metadata(self) -> dict:
         """Get LLM-enhanced database metadata."""
         conn = self.get_connection()
-        results = conn.execute(
-            "SELECT key, value, source FROM database_metadata"
-        ).fetchall()
+        results = conn.execute("SELECT key, value, source FROM database_metadata").fetchall()
         return {r["key"]: {"value": r["value"], "source": r["source"]} for r in results}
 
     def set_database_metadata(self, key: str, value: Any) -> bool:
@@ -947,8 +945,10 @@ async def list_tools() -> list[Tool]:
             name="get_database_info",
             description=(
                 "Get information about this knowledge base including its description, topics, "
-                "and content statistics. Call this first to understand what kind of information "
-                "is available and whether queries are appropriate for this knowledge base."
+                "and content statistics. Call this at the start of a session to understand what's "
+                "available. If the description/topics are empty or seem outdated, you SHOULD "
+                "explore the database (list_sources, recent_documents, sample searches) and call "
+                "set_database_description to document it for future sessions."
             ),
             inputSchema={
                 "type": "object",
@@ -960,7 +960,9 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Update the knowledge base description and topics based on your analysis of "
                 "its contents. Use this after exploring the database to help future sessions "
-                "understand what kind of information is stored here."
+                "understand what kind of information is stored here. Describe the content and "
+                "purpose, not just stats. Good: 'Django backend for education platform with "
+                "student enrollment and grading'. Bad: '2500 code files, 63 markdown docs'."
             ),
             inputSchema={
                 "type": "object",
@@ -1004,9 +1006,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "due_date": {
                         "type": "string",
-                        "description": (
-                            "Due date: ISO date (YYYY-MM-DD), 'today', or 'tomorrow'"
-                        ),
+                        "description": ("Due date: ISO date (YYYY-MM-DD), 'today', or 'tomorrow'"),
                     },
                     "priority": {
                         "type": "string",
@@ -1278,6 +1278,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 info_parts.append(f"**Topics (config):** {', '.join(db_config.topics)}")
 
             # LLM-enhanced metadata
+            llm_desc = None
+            llm_topics = None
             try:
                 metadata = kb.get_database_metadata()
                 llm_desc = metadata.get("llm_description", {}).get("value")
@@ -1305,9 +1307,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             if projects:
                 info_parts.append(f"\n### Projects\n{', '.join(projects)}")
 
-            return CallToolResult(
-                content=[TextContent(type="text", text="\n".join(info_parts))]
-            )
+            # Hint if no description exists
+            if not db_config.description and not llm_desc:
+                info_parts.append(
+                    "\n**Note:** No description set. Consider exploring with "
+                    "recent_documents and search_knowledge, then calling "
+                    "set_database_description to document what's here."
+                )
+
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(info_parts))])
 
         elif name == "set_database_description":
             updated = []
@@ -1348,9 +1356,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 parts.append(f"- Priority: P{result['priority']}")
             if result.get("due_date"):
                 parts.append(f"- Due: {result['due_date']}")
-            return CallToolResult(
-                content=[TextContent(type="text", text="\n".join(parts))]
-            )
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(parts))])
 
         else:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
