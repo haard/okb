@@ -47,8 +47,14 @@ def _get_container_status() -> str | None:
     """Get the status of the lkb container. Returns None if not found."""
     try:
         result = subprocess.run(
-            ["docker", "container", "inspect", "-f", "{{.State.Status}}",
-             config.docker_container_name],
+            [
+                "docker",
+                "container",
+                "inspect",
+                "-f",
+                "{{.State.Status}}",
+                config.docker_container_name,
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -759,6 +765,48 @@ def _save_sync_state(conn, source_name: str, db_name: str, state):
     conn.commit()
 
 
+def _apply_llm_filter(documents: list, filter_cfg: dict, source_name: str) -> list:
+    """Apply LLM filtering to documents.
+
+    Args:
+        documents: List of documents to filter
+        filter_cfg: Filter configuration with 'prompt' and 'action_on_skip'
+        source_name: Name of the source (for logging)
+
+    Returns:
+        Filtered list of documents
+    """
+    from .llm import FilterAction, filter_document
+
+    custom_prompt = filter_cfg.get("prompt")
+    action_on_skip = filter_cfg.get("action_on_skip", "discard")
+
+    filtered = []
+    skipped = 0
+    review = 0
+
+    for doc in documents:
+        result = filter_document(doc, custom_prompt=custom_prompt)
+
+        if result.action == FilterAction.SKIP:
+            skipped += 1
+            if action_on_skip == "archive":
+                # Store without embedding (future: add flag to document)
+                pass
+            # Otherwise discard
+            continue
+        elif result.action == FilterAction.REVIEW:
+            review += 1
+            # Still ingest, but could flag for review (future: add metadata)
+
+        filtered.append(doc)
+
+    if skipped or review:
+        click.echo(f"  Filter: {len(filtered)} ingested, {skipped} skipped, {review} for review")
+
+    return filtered
+
+
 @sync.command("run")
 @click.argument("sources", nargs=-1)
 @click.option("--all", "sync_all", is_flag=True, help="Sync all enabled sources")
@@ -849,7 +897,20 @@ def sync_run(
 
             if documents:
                 click.echo(f"  Fetched {len(documents)} documents")
-                ingester.ingest_documents(documents)
+
+                # Apply LLM filtering if configured
+                llm_filter_cfg = source_cfg.get("llm_filter", {})
+                if llm_filter_cfg.get("enabled"):
+                    documents = _apply_llm_filter(
+                        documents,
+                        llm_filter_cfg,
+                        source_name,
+                    )
+
+                if documents:
+                    ingester.ingest_documents(documents)
+                else:
+                    click.echo("  All documents filtered out")
             else:
                 click.echo("  No new documents")
 
@@ -1030,6 +1091,157 @@ def token_revoke(ctx, token_value: str, database: str | None):
     except Exception as e:
         click.echo(f"Error revoking token: {e}", err=True)
         sys.exit(1)
+
+
+# =============================================================================
+# LLM commands
+# =============================================================================
+
+
+@main.group()
+def llm():
+    """Manage LLM integration for document classification."""
+    pass
+
+
+@llm.command("status")
+@click.option("--db", "database", default=None, help="Database to check cache for")
+@click.pass_context
+def llm_status(ctx, database: str | None):
+    """Show LLM configuration and connectivity status.
+
+    Displays current provider settings, tests connectivity,
+    and shows cache statistics.
+    """
+    import os
+
+    click.echo("LLM Configuration")
+    click.echo("-" * 40)
+
+    # Show config
+    click.echo(f"Provider: {config.llm_provider or '(disabled)'}")
+    if config.llm_provider:
+        click.echo(f"Model: {config.llm_model}")
+        click.echo(f"Timeout: {config.llm_timeout}s")
+        click.echo(f"Cache responses: {config.llm_cache_responses}")
+
+        if config.llm_provider == "modal":
+            click.echo("Backend: Modal GPU (deploy with: lkb llm deploy)")
+        elif config.llm_use_bedrock:
+            click.echo(f"Backend: AWS Bedrock (region: {config.llm_aws_region})")
+        else:
+            api_key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+            click.echo(f"API key set: {'yes' if api_key_set else 'no (set ANTHROPIC_API_KEY)'}")
+
+    click.echo("")
+
+    # Test connectivity if provider is configured
+    if config.llm_provider:
+        click.echo("Connectivity Test")
+        click.echo("-" * 40)
+        try:
+            from .llm.providers import get_provider
+
+            provider = get_provider()
+            if provider is None:
+                click.echo("Status: provider initialization failed")
+            elif provider.is_available():
+                click.echo("Status: available")
+                # List models
+                if hasattr(provider, "list_models"):
+                    models = provider.list_models()
+                    click.echo(f"Available models: {', '.join(models[:3])}...")
+            else:
+                click.echo("Status: not available (check API key or credentials)")
+        except ImportError:
+            click.echo("Status: missing dependencies")
+            click.echo("  Install with: pip install 'local-kb[llm]'")
+        except Exception as e:
+            click.echo(f"Status: error - {e}")
+
+    # Show cache stats if database is available
+    click.echo("")
+    click.echo("Cache Statistics")
+    click.echo("-" * 40)
+    try:
+        db_name = database or ctx.obj.get("database")
+        db_cfg = config.get_database(db_name)
+
+        from .llm.cache import get_cache_stats
+
+        stats = get_cache_stats(db_cfg.url)
+        click.echo(f"Total cached responses: {stats['total_entries']}")
+        if stats["by_provider"]:
+            for entry in stats["by_provider"]:
+                click.echo(f"  {entry['provider']}/{entry['model']}: {entry['count']}")
+        if stats["oldest_entry"]:
+            click.echo(f"Oldest entry: {stats['oldest_entry']}")
+    except Exception as e:
+        click.echo(f"Cache unavailable: {e}")
+
+
+@llm.command("clear-cache")
+@click.option("--db", "database", default=None, help="Database to clear cache for")
+@click.option(
+    "--older-than", "days", type=int, default=None, help="Only clear entries older than N days"
+)
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def llm_clear_cache(ctx, database: str | None, days: int | None, yes: bool):
+    """Clear the LLM response cache."""
+    from datetime import UTC, datetime, timedelta
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    if days:
+        older_than = datetime.now(UTC) - timedelta(days=days)
+        msg = f"Clear cache entries older than {days} days?"
+    else:
+        older_than = None
+        msg = "Clear ALL cache entries?"
+
+    if not yes:
+        if not click.confirm(msg):
+            click.echo("Cancelled.")
+            return
+
+    from .llm.cache import clear_cache
+
+    deleted = clear_cache(older_than=older_than, db_url=db_cfg.url)
+    click.echo(f"Deleted {deleted} cache entries.")
+
+
+@llm.command("deploy")
+def llm_deploy():
+    """Deploy the Modal LLM app for open model inference.
+
+    This deploys a GPU-accelerated LLM service on Modal using Llama 3.2.
+    Required for using provider: modal in your config.
+
+    Requires Modal CLI to be installed and authenticated:
+        pip install modal
+        modal token new
+    """
+    if not shutil.which("modal"):
+        click.echo("Error: modal CLI is not installed.", err=True)
+        click.echo("Install with: pip install modal", err=True)
+        click.echo("Then authenticate: modal token new", err=True)
+        sys.exit(1)
+
+    # Find modal_llm.py in the package
+    llm_path = Path(__file__).parent / "modal_llm.py"
+    if not llm_path.exists():
+        click.echo(f"Error: modal_llm.py not found at {llm_path}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Deploying {llm_path} to Modal...")
+    click.echo("Note: First deploy downloads the model (~2GB) and may take a few minutes.")
+    result = subprocess.run(
+        ["modal", "deploy", str(llm_path)],
+        cwd=llm_path.parent,
+    )
+    sys.exit(result.returncode)
 
 
 if __name__ == "__main__":

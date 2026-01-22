@@ -279,6 +279,17 @@ DEFAULTS = {
         #     repos: [owner/repo1, owner/repo2]
         "sources": {},
     },
+    "llm": {
+        # LLM provider configuration
+        # provider: None = disabled, "claude" = Anthropic API
+        "provider": None,
+        "model": "claude-haiku-4-5-20251001",
+        "timeout": 30,
+        "cache_responses": True,
+        # Bedrock settings (when use_bedrock is True)
+        "use_bedrock": False,
+        "aws_region": "us-west-2",
+    },
 }
 
 
@@ -330,6 +341,14 @@ class Config:
 
     # Plugin settings (loaded from config in __post_init__)
     plugin_sources: dict[str, dict] = field(default_factory=dict)
+
+    # LLM settings (loaded from config in __post_init__)
+    llm_provider: str | None = None
+    llm_model: str = "claude-haiku-4-5-20251001"
+    llm_timeout: int = 30
+    llm_cache_responses: bool = True
+    llm_use_bedrock: bool = False
+    llm_aws_region: str = "us-west-2"
 
     def __post_init__(self):
         """Load configuration from file and environment."""
@@ -495,6 +514,28 @@ class Config:
         plugins_cfg = file_config.get("plugins", {})
         self.plugin_sources = plugins_cfg.get("sources", {})
 
+        # LLM settings
+        llm_cfg = file_config.get("llm", {})
+        self.llm_provider = os.environ.get(
+            "LKB_LLM_PROVIDER",
+            llm_cfg.get("provider", DEFAULTS["llm"]["provider"]),
+        )
+        self.llm_model = os.environ.get(
+            "LKB_LLM_MODEL",
+            llm_cfg.get("model", DEFAULTS["llm"]["model"]),
+        )
+        self.llm_timeout = int(
+            os.environ.get(
+                "LKB_LLM_TIMEOUT",
+                llm_cfg.get("timeout", DEFAULTS["llm"]["timeout"]),
+            )
+        )
+        self.llm_cache_responses = llm_cfg.get(
+            "cache_responses", DEFAULTS["llm"]["cache_responses"]
+        )
+        self.llm_use_bedrock = llm_cfg.get("use_bedrock", DEFAULTS["llm"]["use_bedrock"])
+        self.llm_aws_region = llm_cfg.get("aws_region", DEFAULTS["llm"]["aws_region"])
+
     def get_database(self, name: str | None = None) -> DatabaseConfig:
         """Get database config by name, or default if None."""
         if name is None:
@@ -599,6 +640,14 @@ class Config:
                     name: {**cfg, "token": "***" if "token" in cfg else None}
                     for name, cfg in self.plugin_sources.items()
                 },
+            },
+            "llm": {
+                "provider": self.llm_provider,
+                "model": self.llm_model,
+                "timeout": self.llm_timeout,
+                "cache_responses": self.llm_cache_responses,
+                "use_bedrock": self.llm_use_bedrock,
+                "aws_region": self.llm_aws_region,
             },
         }
 

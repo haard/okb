@@ -55,6 +55,9 @@ lkb ingest ~/notes ~/docs
 | `lkb rescan` | Check indexed files for changes, re-ingest stale |
 | `lkb rescan --dry-run` | Show what would change without executing |
 | `lkb rescan --delete` | Also remove documents for missing files |
+| `lkb llm status` | Show LLM config and connectivity |
+| `lkb llm deploy` | Deploy Modal LLM for open model inference |
+| `lkb llm clear-cache` | Clear LLM response cache |
 
 ## Architecture
 
@@ -137,6 +140,49 @@ extensions:
 ```
 
 Merge: scalars replace, lists extend, dicts deep-merge.
+
+### LLM Integration (Optional)
+
+Enable LLM-based document classification and filtering:
+
+```yaml
+llm:
+  provider: claude          # "claude", "modal", or null (disabled)
+  model: claude-haiku-4-5-20251001
+  timeout: 30
+  cache_responses: true
+```
+
+**Providers:**
+| Provider | Setup | Cost |
+|----------|-------|------|
+| `claude` | `export ANTHROPIC_API_KEY=...` | ~$0.25/1M tokens |
+| `modal` | `lkb llm deploy` | ~$0.02/min GPU |
+
+For Modal (no API key needed):
+```yaml
+llm:
+  provider: modal
+  model: meta-llama/Llama-3.2-3B-Instruct
+```
+
+**Pre-ingest filtering** - skip low-value content during sync:
+```yaml
+plugins:
+  sources:
+    dropbox-paper:
+      llm_filter:
+        enabled: true
+        prompt: "Skip meeting notes and drafts"
+        action_on_skip: discard  # or "archive"
+```
+
+CLI commands:
+```bash
+lkb llm status              # Show config and connectivity
+lkb llm deploy              # Deploy Modal LLM (for provider: modal)
+lkb llm clear-cache         # Clear response cache
+```
 
 ## Claude Code MCP Config
 

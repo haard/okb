@@ -29,7 +29,7 @@ embedder_image = modal.Image.debian_slim(python_version="3.11").pip_install(
     image=embedder_image,
     gpu="T4",  # Cheapest option, sufficient for embedding
     timeout=600,
-    container_idle_timeout=300,  # Keep warm for 5 min
+    scaledown_window=300,  # Keep warm for 5 min
     retries=2,
 )
 class Embedder:
