@@ -26,7 +26,7 @@ from .mcp_server import (
     format_actionable_items,
     format_search_results,
 )
-from .tokens import LKBTokenVerifier, TokenInfo
+from .tokens import OKBTokenVerifier, TokenInfo
 
 # Permission sets
 READ_ONLY_TOOLS = frozenset(
@@ -359,7 +359,7 @@ class HTTPMCPServer:
 
     def create_app(self) -> Starlette:
         """Create the Starlette application."""
-        verifier = LKBTokenVerifier(self._get_db_url)
+        verifier = OKBTokenVerifier(self._get_db_url)
 
         async def handle_sse(request: Request) -> Response:
             """Handle SSE connections for MCP."""

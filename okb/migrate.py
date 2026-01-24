@@ -1,4 +1,4 @@
-"""Migration runner for lkb database schema."""
+"""Migration runner for okb database schema."""
 
 from __future__ import annotations
 

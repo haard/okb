@@ -14,15 +14,15 @@ class PluginRegistry:
     """Registry for file parsers and API sources discovered via entry_points.
 
     Plugins are discovered from two entry_point groups:
-    - lkb.parsers: FileParser implementations
-    - lkb.sources: APISource implementations
+    - okb.parsers: FileParser implementations
+    - okb.sources: APISource implementations
 
     Example pyproject.toml for a plugin:
-        [project.entry-points."lkb.parsers"]
-        epub = "lkb_epub:EpubParser"
+        [project.entry-points."okb.parsers"]
+        epub = "okb_epub:EpubParser"
 
-        [project.entry-points."lkb.sources"]
-        github = "lkb_github:GitHubSource"
+        [project.entry-points."okb.sources"]
+        github = "okb_github:GitHubSource"
     """
 
     _parsers: dict[str, list[FileParser]] = {}  # ext -> list of parsers
@@ -36,7 +36,7 @@ class PluginRegistry:
             return
 
         # Load file parsers
-        parser_eps = entry_points(group="lkb.parsers")
+        parser_eps = entry_points(group="okb.parsers")
         for ep in parser_eps:
             try:
                 parser_cls = ep.load()
@@ -50,7 +50,7 @@ class PluginRegistry:
                 print(f"Warning: Failed to load parser plugin '{ep.name}': {e}")
 
         # Load API sources
-        source_eps = entry_points(group="lkb.sources")
+        source_eps = entry_points(group="okb.sources")
         for ep in source_eps:
             try:
                 source_cls = ep.load()

@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lkb.ingest import Document
-    from lkb.plugins.base import SyncState
+    from okb.ingest import Document
+    from okb.plugins.base import SyncState
 
 
 class DropboxPaperSource:
@@ -65,7 +65,7 @@ class DropboxPaperSource:
         Returns:
             Tuple of (list of documents, new sync state)
         """
-        from lkb.plugins.base import SyncState as SyncStateClass
+        from okb.plugins.base import SyncState as SyncStateClass
 
         if self._client is None:
             raise RuntimeError("Source not configured. Call configure() first.")
@@ -139,7 +139,7 @@ class DropboxPaperSource:
         """
         from dropbox.paper import ExportFormat
 
-        from lkb.ingest import Document, DocumentMetadata
+        from okb.ingest import Document, DocumentMetadata
 
         # Get document metadata
         try:

@@ -1,17 +1,17 @@
-# Local Knowledge Base (LKB)
+# Owned Knowledge Base (OKB)
 
 A local-first semantic search system for personal documents with Claude Code integration via MCP.
 
 ## Installation
 
 ```bash
-pip install local-kb
+pip install okb
 ```
 
 Or from source:
 ```bash
-git clone https://github.com/yourusername/lkb
-cd lkb
+git clone https://github.com/yourusername/okb
+cd okb
 pip install -e .
 ```
 
@@ -19,13 +19,13 @@ pip install -e .
 
 ```bash
 # 1. Start the database
-lkb db start
+okb db start
 
 # 2. (Optional) Deploy Modal embedder for faster batch ingestion
-lkb modal deploy
+okb modal deploy
 
 # 3. Ingest your documents
-lkb ingest ~/notes ~/docs
+okb ingest ~/notes ~/docs
 
 # 4. Configure Claude Code MCP (see below)
 ```
@@ -34,30 +34,30 @@ lkb ingest ~/notes ~/docs
 
 | Command | Description |
 |---------|-------------|
-| `lkb db start` | Start pgvector database container |
-| `lkb db stop` | Stop database container |
-| `lkb db status` | Show database status |
-| `lkb db destroy` | Remove container and volume (destructive) |
-| `lkb ingest <paths>` | Ingest documents into knowledge base |
-| `lkb ingest <paths> --local` | Ingest using CPU embedding (no Modal) |
-| `lkb serve` | Start MCP server (stdio, for Claude Code) |
-| `lkb serve --http` | Start HTTP MCP server with token auth |
-| `lkb watch <paths>` | Watch directories for changes |
-| `lkb config init` | Create default config file |
-| `lkb config show` | Show current configuration |
-| `lkb modal deploy` | Deploy GPU embedder to Modal |
-| `lkb token create` | Create API token for HTTP server |
-| `lkb token list` | List tokens for a database |
-| `lkb token revoke` | Revoke an API token |
-| `lkb sync list` | List available API sources (plugins) |
-| `lkb sync run <sources>` | Sync data from external APIs |
-| `lkb sync status` | Show last sync times |
-| `lkb rescan` | Check indexed files for changes, re-ingest stale |
-| `lkb rescan --dry-run` | Show what would change without executing |
-| `lkb rescan --delete` | Also remove documents for missing files |
-| `lkb llm status` | Show LLM config and connectivity |
-| `lkb llm deploy` | Deploy Modal LLM for open model inference |
-| `lkb llm clear-cache` | Clear LLM response cache |
+| `okb db start` | Start pgvector database container |
+| `okb db stop` | Stop database container |
+| `okb db status` | Show database status |
+| `okb db destroy` | Remove container and volume (destructive) |
+| `okb ingest <paths>` | Ingest documents into knowledge base |
+| `okb ingest <paths> --local` | Ingest using CPU embedding (no Modal) |
+| `okb serve` | Start MCP server (stdio, for Claude Code) |
+| `okb serve --http` | Start HTTP MCP server with token auth |
+| `okb watch <paths>` | Watch directories for changes |
+| `okb config init` | Create default config file |
+| `okb config show` | Show current configuration |
+| `okb modal deploy` | Deploy GPU embedder to Modal |
+| `okb token create` | Create API token for HTTP server |
+| `okb token list` | List tokens for a database |
+| `okb token revoke` | Revoke an API token |
+| `okb sync list` | List available API sources (plugins) |
+| `okb sync run <sources>` | Sync data from external APIs |
+| `okb sync status` | Show last sync times |
+| `okb rescan` | Check indexed files for changes, re-ingest stale |
+| `okb rescan --dry-run` | Show what would change without executing |
+| `okb rescan --delete` | Also remove documents for missing files |
+| `okb llm status` | Show LLM config and connectivity |
+| `okb llm deploy` | Deploy Modal LLM for open model inference |
+| `okb llm clear-cache` | Clear LLM response cache |
 
 ## Architecture
 
@@ -92,11 +92,11 @@ lkb ingest ~/notes ~/docs
 
 ## Configuration
 
-Configuration is loaded from `~/.config/lkb/config.yaml` (or `$XDG_CONFIG_HOME/lkb/config.yaml`).
+Configuration is loaded from `~/.config/okb/config.yaml` (or `$XDG_CONFIG_HOME/okb/config.yaml`).
 
 Create default config:
 ```bash
-lkb config init
+okb config init
 ```
 
 Example config:
@@ -105,14 +105,14 @@ databases:
   personal:
     url: postgresql://knowledge:localdev@localhost:5433/personal_kb
     default: true    # Used when --db not specified (only one can be default)
-    managed: true    # lkb manages via Docker
+    managed: true    # okb manages via Docker
   work:
     url: postgresql://knowledge:localdev@localhost:5433/work_kb
     managed: true
 
 docker:
   port: 5433
-  container_name: lkb-pgvector
+  container_name: okb-pgvector
 
 chunking:
   chunk_size: 512
@@ -123,15 +123,15 @@ Use `--db <name>` to target a specific database with any command.
 
 Environment variables override config file settings:
 - `KB_DATABASE_URL` - Database connection string
-- `LKB_DOCKER_PORT` - Docker port mapping
-- `LKB_CONTAINER_NAME` - Docker container name
+- `OKB_DOCKER_PORT` - Docker port mapping
+- `OKB_CONTAINER_NAME` - Docker container name
 
 ### Project-Local Config
 
-Override global config per-project with `.lkbconf.yaml` (searched from CWD upward):
+Override global config per-project with `.okbconf.yaml` (searched from CWD upward):
 
 ```yaml
-# .lkbconf.yaml
+# .okbconf.yaml
 default_database: work  # Use 'work' db in this project
 
 extensions:
@@ -157,7 +157,7 @@ llm:
 | Provider | Setup | Cost |
 |----------|-------|------|
 | `claude` | `export ANTHROPIC_API_KEY=...` | ~$0.25/1M tokens |
-| `modal` | `lkb llm deploy` | ~$0.02/min GPU |
+| `modal` | `okb llm deploy` | ~$0.02/min GPU |
 
 For Modal (no API key needed):
 ```yaml
@@ -179,9 +179,9 @@ plugins:
 
 CLI commands:
 ```bash
-lkb llm status              # Show config and connectivity
-lkb llm deploy              # Deploy Modal LLM (for provider: modal)
-lkb llm clear-cache         # Clear response cache
+okb llm status              # Show config and connectivity
+okb llm deploy              # Deploy Modal LLM (for provider: modal)
+okb llm clear-cache         # Clear response cache
 ```
 
 ## Claude Code MCP Config
@@ -194,7 +194,7 @@ Add to your Claude Code MCP configuration:
 {
   "mcpServers": {
     "knowledge-base": {
-      "command": "lkb",
+      "command": "okb",
       "args": ["serve"]
     }
   }
@@ -207,11 +207,11 @@ First, start the HTTP server and create a token:
 
 ```bash
 # Create a token
-lkb token create --db default -d "Claude Code"
-# Output: lkb_default_rw_a1b2c3d4e5f6g7h8
+okb token create --db default -d "Claude Code"
+# Output: okb_default_rw_a1b2c3d4e5f6g7h8
 
 # Start HTTP server
-lkb serve --http --host 0.0.0.0 --port 8080
+okb serve --http --host 0.0.0.0 --port 8080
 ```
 
 Then configure Claude Code to connect via SSE:
@@ -223,7 +223,7 @@ Then configure Claude Code to connect via SSE:
       "type": "sse",
       "url": "http://localhost:8080/sse",
       "headers": {
-        "Authorization": "Bearer lkb_default_rw_a1b2c3d4e5f6g7h8"
+        "Authorization": "Bearer okb_default_rw_a1b2c3d4e5f6g7h8"
       }
     }
   }
@@ -295,13 +295,13 @@ ruff check . && ruff format .
 
 ## Plugin System
 
-LKB supports plugins for custom file parsers and API data sources (GitHub, Todoist, etc).
+OKB supports plugins for custom file parsers and API data sources (GitHub, Todoist, etc).
 
 ### Creating a Plugin
 
 ```python
 # File parser plugin
-from lkb.plugins import FileParser, Document
+from okb.plugins import FileParser, Document
 
 class EpubParser:
     extensions = ['.epub']
@@ -311,7 +311,7 @@ class EpubParser:
     def parse(self, path, extra_metadata=None) -> Document: ...
 
 # API source plugin
-from lkb.plugins import APISource, SyncState, Document
+from okb.plugins import APISource, SyncState, Document
 
 class GitHubSource:
     name = 'github'
@@ -325,17 +325,17 @@ class GitHubSource:
 
 In your plugin's `pyproject.toml`:
 ```toml
-[project.entry-points."lkb.parsers"]
-epub = "lkb_epub:EpubParser"
+[project.entry-points."okb.parsers"]
+epub = "okb_epub:EpubParser"
 
-[project.entry-points."lkb.sources"]
-github = "lkb_github:GitHubSource"
+[project.entry-points."okb.sources"]
+github = "okb_github:GitHubSource"
 ```
 
 ### Configuring API Sources
 
 ```yaml
-# ~/.config/lkb/config.yaml
+# ~/.config/okb/config.yaml
 plugins:
   sources:
     github:

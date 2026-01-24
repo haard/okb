@@ -1,5 +1,5 @@
 [project]
-name = "local-kb"
+name = "okb"
 version = "1.0.0"
 description = "Personal knowledge base with semantic search for LLMs"
 readme = "README.md"
@@ -16,6 +16,7 @@ dependencies = [
     "modal>=1.0.0",
     "yoyo-migrations>=8.0.0",
     "dropbox>=12.0.0",
+    "PyGithub>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -36,23 +37,24 @@ dev = [
 ]
 
 [project.scripts]
-lkb = "lkb.cli:main"
+okb = "okb.cli:main"
 
 # Plugin entry points - external plugins register here
 # Example for a plugin package:
-#   [project.entry-points."lkb.parsers"]
-#   epub = "lkb_epub:EpubParser"
+#   [project.entry-points."okb.parsers"]
+#   epub = "okb_epub:EpubParser"
 #
-#   [project.entry-points."lkb.sources"]
-#   github = "lkb_github:GitHubSource"
+#   [project.entry-points."okb.sources"]
+#   todoist = "okb_todoist:TodoistSource"
 
-[project.entry-points."lkb.parsers"]
+[project.entry-points."okb.parsers"]
 # Built-in parsers are handled directly in ingest.py
 # Plugins can register additional parsers here
 
-[project.entry-points."lkb.sources"]
+[project.entry-points."okb.sources"]
 # Built-in sources
-dropbox-paper = "lkb.plugins.sources.dropbox_paper:DropboxPaperSource"
+dropbox-paper = "okb.plugins.sources.dropbox_paper:DropboxPaperSource"
+github = "okb.plugins.sources.github:GitHubSource"
 # External plugins register additional API sources here
 
 [build-system]
@@ -60,7 +62,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-packages = [{include = "lkb"}]
+packages = [{include = "okb"}]
 
 [tool.ruff]
 line-length = 100

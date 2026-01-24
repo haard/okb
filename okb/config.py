@@ -69,8 +69,8 @@ def get_config_dir() -> Path:
     """Get the config directory, respecting XDG_CONFIG_HOME."""
     xdg_config = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config:
-        return Path(xdg_config) / "lkb"
-    return Path.home() / ".config" / "lkb"
+        return Path(xdg_config) / "okb"
+    return Path.home() / ".config" / "okb"
 
 
 def get_config_path() -> Path:
@@ -88,10 +88,10 @@ def load_config_file() -> dict[str, Any]:
 
 
 def find_local_config(start_path: Path | None = None) -> Path | None:
-    """Find .lkbconf.yaml by walking up from start_path (default: CWD)."""
+    """Find .okbconf.yaml by walking up from start_path (default: CWD)."""
     path = (start_path or Path.cwd()).resolve()
     while path != path.parent:
-        local_config = path / ".lkbconf.yaml"
+        local_config = path / ".okbconf.yaml"
         if local_config.exists():
             return local_config
         path = path.parent
@@ -151,8 +151,8 @@ DEFAULTS = {
     },
     "docker": {
         "port": 5433,
-        "container_name": "lkb-pgvector",
-        "volume_name": "lkb-pgvector-data",
+        "container_name": "okb-pgvector",
+        "volume_name": "okb-pgvector-data",
         "password": "localdev",
     },
     "http": {
@@ -306,8 +306,8 @@ class Config:
 
     # Docker
     docker_port: int = 5433
-    docker_container_name: str = "lkb-pgvector"
-    docker_volume_name: str = "lkb-pgvector-data"
+    docker_container_name: str = "okb-pgvector"
+    docker_volume_name: str = "okb-pgvector-data"
     docker_password: str = "localdev"
 
     # HTTP server
@@ -436,32 +436,32 @@ class Config:
         docker_cfg = file_config.get("docker", {})
         self.docker_port = int(
             os.environ.get(
-                "LKB_DOCKER_PORT",
+                "OKB_DOCKER_PORT",
                 docker_cfg.get("port", DEFAULTS["docker"]["port"]),
             )
         )
         self.docker_container_name = os.environ.get(
-            "LKB_CONTAINER_NAME",
+            "OKB_CONTAINER_NAME",
             docker_cfg.get("container_name", DEFAULTS["docker"]["container_name"]),
         )
         self.docker_volume_name = os.environ.get(
-            "LKB_VOLUME_NAME",
+            "OKB_VOLUME_NAME",
             docker_cfg.get("volume_name", DEFAULTS["docker"]["volume_name"]),
         )
         self.docker_password = os.environ.get(
-            "LKB_DB_PASSWORD",
+            "OKB_DB_PASSWORD",
             docker_cfg.get("password", DEFAULTS["docker"]["password"]),
         )
 
         # HTTP server settings
         http_cfg = file_config.get("http", {})
         self.http_host = os.environ.get(
-            "LKB_HTTP_HOST",
+            "OKB_HTTP_HOST",
             http_cfg.get("host", DEFAULTS["http"]["host"]),
         )
         self.http_port = int(
             os.environ.get(
-                "LKB_HTTP_PORT",
+                "OKB_HTTP_PORT",
                 http_cfg.get("port", DEFAULTS["http"]["port"]),
             )
         )
@@ -517,16 +517,16 @@ class Config:
         # LLM settings
         llm_cfg = file_config.get("llm", {})
         self.llm_provider = os.environ.get(
-            "LKB_LLM_PROVIDER",
+            "OKB_LLM_PROVIDER",
             llm_cfg.get("provider", DEFAULTS["llm"]["provider"]),
         )
         self.llm_model = os.environ.get(
-            "LKB_LLM_MODEL",
+            "OKB_LLM_MODEL",
             llm_cfg.get("model", DEFAULTS["llm"]["model"]),
         )
         self.llm_timeout = int(
             os.environ.get(
-                "LKB_LLM_TIMEOUT",
+                "OKB_LLM_TIMEOUT",
                 llm_cfg.get("timeout", DEFAULTS["llm"]["timeout"]),
             )
         )

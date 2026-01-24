@@ -17,7 +17,7 @@ from .config import config, get_config_dir, get_config_path, get_default_config_
 
 
 @click.group()
-@click.version_option(package_name="local-kb")
+@click.version_option(package_name="okb")
 @click.option("--db", "database", default=None, help="Database to use")
 @click.pass_context
 def main(ctx, database):
@@ -70,7 +70,7 @@ def _get_init_sql_path() -> Path:
     """Get the path to init.sql, extracting from package if needed."""
     # Try to access init.sql from package data
     try:
-        ref = importlib.resources.files("lkb.data").joinpath("init.sql")
+        ref = importlib.resources.files("okb.data").joinpath("init.sql")
         # If it's a real file path, return it directly
         with importlib.resources.as_file(ref) as path:
             return path
@@ -217,10 +217,10 @@ def start():
 
     # If init.sql is inside a zip/egg, we need to extract it to a temp location
     if not init_sql.exists():
-        ref = importlib.resources.files("lkb.data").joinpath("init.sql")
+        ref = importlib.resources.files("okb.data").joinpath("init.sql")
         init_sql_content = ref.read_text()
         # Write to temp file
-        temp_dir = Path(tempfile.gettempdir()) / "lkb"
+        temp_dir = Path(tempfile.gettempdir()) / "okb"
         temp_dir.mkdir(exist_ok=True)
         init_sql = temp_dir / "init.sql"
         init_sql.write_text(init_sql_content)
@@ -310,7 +310,7 @@ def status():
     container_status = _get_container_status()
     if container_status is None:
         click.echo(f"Container '{config.docker_container_name}' does not exist.")
-        click.echo("Run 'lkb db start' to create it.")
+        click.echo("Run 'okb db start' to create it.")
         return
 
     click.echo(f"Container: {config.docker_container_name}")
@@ -349,7 +349,7 @@ def status():
                 pending = get_pending(config.db_url)
                 click.echo(f"Migrations: {len(applied)} applied, {len(pending)} pending")
                 if pending:
-                    click.echo("  Run 'lkb db migrate' to apply pending migrations.")
+                    click.echo("  Run 'okb db migrate' to apply pending migrations.")
             except Exception as e:
                 click.echo(f"Migrations: error checking ({e})")
         else:
@@ -441,7 +441,7 @@ def config_cmd():
 @config_cmd.command("init")
 @click.option("--force", is_flag=True, help="Overwrite existing config file")
 def config_init(force: bool):
-    """Create default config file at ~/.config/lkb/config.yaml."""
+    """Create default config file at ~/.config/okb/config.yaml."""
     config_path = get_config_path()
 
     if config_path.exists() and not force:
@@ -582,13 +582,13 @@ def rescan(ctx, database: str | None, local: bool, dry_run: bool, delete_missing
 
     Examples:
 
-        lkb rescan              # Rescan default database
+        okb rescan              # Rescan default database
 
-        lkb rescan --dry-run    # Show what would change
+        okb rescan --dry-run    # Show what would change
 
-        lkb rescan --delete     # Also remove missing files
+        okb rescan --delete     # Also remove missing files
 
-        lkb rescan --db work    # Rescan specific database
+        okb rescan --db work    # Rescan specific database
     """
     from .rescan import Rescanner
 
@@ -677,7 +677,7 @@ def watch(ctx, paths: tuple[str, ...], metadata: str, local: bool, database: str
     db_cfg = config.get_database(db_name)
 
     # Convert to the format watch.py expects
-    sys.argv = ["lkb-watch"] + list(paths)
+    sys.argv = ["okb-watch"] + list(paths)
     sys.argv.extend(["--db-url", db_cfg.url])
     if metadata != "{}":
         sys.argv.extend(["--metadata", metadata])
@@ -815,6 +815,14 @@ def _apply_llm_filter(documents: list, filter_cfg: dict, source_name: str) -> li
 @click.option("--db", "database", default=None, help="Database to sync into")
 @click.option("--folder", multiple=True, help="Filter to specific folder path (can repeat)")
 @click.option("--doc", "doc_ids", multiple=True, help="Sync specific document ID (can repeat)")
+# GitHub-specific options
+@click.option("--repo", multiple=True, help="GitHub repo to sync (owner/repo, can repeat)")
+@click.option(
+    "--source", "include_source", is_flag=True, help="Sync all source files (not just README+docs)"
+)
+@click.option("--issues", "include_issues", is_flag=True, help="Include GitHub issues")
+@click.option("--prs", "include_prs", is_flag=True, help="Include GitHub pull requests")
+@click.option("--wiki", "include_wiki", is_flag=True, help="Include GitHub wiki pages")
 @click.pass_context
 def sync_run(
     ctx,
@@ -825,10 +833,15 @@ def sync_run(
     database: str | None,
     folder: tuple[str, ...],
     doc_ids: tuple[str, ...],
+    repo: tuple[str, ...],
+    include_source: bool,
+    include_issues: bool,
+    include_prs: bool,
+    include_wiki: bool,
 ):
     """Sync from API sources.
 
-    Example: lkb sync run github todoist
+    Example: lkb sync run github --repo owner/repo
     """
     import psycopg
     from psycopg.rows import dict_row
@@ -877,6 +890,17 @@ def sync_run(
                 source_cfg["folders"] = list(folder)
             if doc_ids:
                 source_cfg["doc_ids"] = list(doc_ids)
+            # GitHub-specific options
+            if repo:
+                source_cfg["repos"] = list(repo)
+            if include_source:
+                source_cfg["include_source"] = True
+            if include_issues:
+                source_cfg["include_issues"] = True
+            if include_prs:
+                source_cfg["include_prs"] = True
+            if include_wiki:
+                source_cfg["include_wiki"] = True
 
             try:
                 source.configure(source_cfg)
@@ -1155,7 +1179,7 @@ def llm_status(ctx, database: str | None):
                 click.echo("Status: not available (check API key or credentials)")
         except ImportError:
             click.echo("Status: missing dependencies")
-            click.echo("  Install with: pip install 'local-kb[llm]'")
+            click.echo("  Install with: pip install 'okb[llm]'")
         except Exception as e:
             click.echo(f"Status: error - {e}")
 

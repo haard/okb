@@ -1,7 +1,7 @@
 """Token management for HTTP authentication.
 
-Token format: lkb_<database>_<ro|rw>_<random16hex>
-Example: lkb_personal_ro_a1b2c3d4e5f6g7h8
+Token format: okb_<database>_<ro|rw>_<random16hex>
+Example: okb_personal_ro_a1b2c3d4e5f6g7h8
 
 Tokens are stored hashed (SHA256) in the database for security.
 """
@@ -30,8 +30,8 @@ class TokenInfo:
     last_used_at: datetime | None
 
 
-# Token format regex: lkb_<database>_<ro|rw>_<hex16>
-TOKEN_PATTERN = re.compile(r"^lkb_([a-z0-9_-]+)_(ro|rw)_([a-f0-9]{16})$")
+# Token format regex: okb_<database>_<ro|rw>_<hex16>
+TOKEN_PATTERN = re.compile(r"^okb_([a-z0-9_-]+)_(ro|rw)_([a-f0-9]{16})$")
 
 
 def generate_token(database: str, permissions: str = "rw") -> str:
@@ -42,7 +42,7 @@ def generate_token(database: str, permissions: str = "rw") -> str:
         permissions: 'ro' for read-only, 'rw' for read-write
 
     Returns:
-        Token string like 'lkb_personal_ro_a1b2c3d4e5f6g7h8'
+        Token string like 'okb_personal_ro_a1b2c3d4e5f6g7h8'
     """
     if permissions not in ("ro", "rw"):
         raise ValueError("permissions must be 'ro' or 'rw'")
@@ -50,7 +50,7 @@ def generate_token(database: str, permissions: str = "rw") -> str:
         raise ValueError("database name must be lowercase alphanumeric with _ or -")
 
     random_part = secrets.token_hex(8)  # 16 hex chars
-    return f"lkb_{database}_{permissions}_{random_part}"
+    return f"okb_{database}_{permissions}_{random_part}"
 
 
 def hash_token(token: str) -> str:
@@ -254,7 +254,7 @@ def verify_token(token: str, get_db_url_fn) -> TokenInfo | None:
         return None
 
 
-class LKBTokenVerifier:
+class OKBTokenVerifier:
     """Token verifier for HTTP middleware integration."""
 
     def __init__(self, get_db_url_fn):

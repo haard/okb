@@ -4,7 +4,7 @@ This package provides a provider-agnostic interface for LLM operations,
 with support for Claude API, AWS Bedrock, and response caching.
 
 Usage:
-    from lkb.llm import get_llm, complete
+    from okb.llm import get_llm, complete
 
     # Get configured provider (returns None if disabled)
     llm = get_llm()

@@ -71,11 +71,11 @@ class APISource(Protocol):
     Example:
         class GitHubSource:
             name = 'github'
-            source_type = 'github-issue'
+            source_type = 'github-source'
 
             def configure(self, config: dict) -> None:
                 self._token = config['token']
-                self._repos = config.get('repos', [])
+                self._repos = config.get('repos', [])  # From CLI --repo flags
 
             def fetch(self, state: SyncState | None = None) -> tuple[list[Document], SyncState]:
                 # Use state.last_sync for incremental fetching
@@ -108,5 +108,3 @@ class APISource(Protocol):
             Tuple of (list of documents, new sync state)
         """
         ...
-
-
