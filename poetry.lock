@@ -189,7 +189,7 @@ description = "The official Python library for the anthropic API"
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "extra == \"llm\" or extra == \"all\""
+markers = "extra == \"llm\" or extra == \"llm-bedrock\" or extra == \"all\""
 files = [
     {file = "anthropic-0.76.0-py3-none-any.whl", hash = "sha256:81efa3113901192af2f0fe977d3ec73fdadb1e691586306c4256cd6d5ccc331c"},
     {file = "anthropic-0.76.0.tar.gz", hash = "sha256:e0cae6a368986d5cf6df743dfbb1b9519e6a9eee9c6c942ad8121c0b34416ffe"},
@@ -256,6 +256,48 @@ files = [
 
 [package.extras]
 dev = ["backports.zoneinfo ; python_version < \"3.9\"", "freezegun (>=1.0,<2.0)", "jinja2 (>=3.0)", "pytest (>=6.0)", "pytest-cov", "pytz", "setuptools", "tzdata ; sys_platform == \"win32\""]
+
+[[package]]
+name = "boto3"
+version = "1.42.34"
+description = "The AWS SDK for Python"
+optional = true
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "extra == \"llm-bedrock\""
+files = [
+    {file = "boto3-1.42.34-py3-none-any.whl", hash = "sha256:db3fb539e3f806b911ec4ca991f2f8bff333c5f0b87132a82e28b521fc5ec164"},
+    {file = "boto3-1.42.34.tar.gz", hash = "sha256:75d7443c81a029283442fad138629be1eefaa3e6d430c28118a0f4cdbd57855d"},
+]
+
+[package.dependencies]
+botocore = ">=1.42.34,<1.43.0"
+jmespath = ">=0.7.1,<2.0.0"
+s3transfer = ">=0.16.0,<0.17.0"
+
+[package.extras]
+crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
+
+[[package]]
+name = "botocore"
+version = "1.42.34"
+description = "Low-level, data-driven core of boto 3."
+optional = true
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "extra == \"llm-bedrock\""
+files = [
+    {file = "botocore-1.42.34-py3-none-any.whl", hash = "sha256:94099b5d09d0c4bfa6414fb3cffd54275ce6e51d7ba016f17a0e79f9274f68f7"},
+    {file = "botocore-1.42.34.tar.gz", hash = "sha256:92e44747da7890270d8dcc494ecc61fc315438440c55e00dc37a57d402b1bb66"},
+]
+
+[package.dependencies]
+jmespath = ">=0.7.1,<2.0.0"
+python-dateutil = ">=2.1,<3.0.0"
+urllib3 = {version = ">=1.25.4,<2.2.0 || >2.2.0,<3", markers = "python_version >= \"3.10\""}
+
+[package.extras]
+crt = ["awscrt (==0.29.2)"]
 
 [[package]]
 name = "cbor2"
@@ -671,6 +713,34 @@ test = ["certifi (>=2024)", "cryptography-vectors (==46.0.3)", "pretend (>=0.7)"
 test-randomorder = ["pytest-randomly"]
 
 [[package]]
+name = "dataclass-wizard"
+version = "0.39.1"
+description = "A wizard-like JSON serialization library for Python dataclasses"
+optional = true
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "extra == \"todoist\" or extra == \"all\""
+files = [
+    {file = "dataclass_wizard-0.39.1-py3-none-any.whl", hash = "sha256:3324e59eca705882eb34e2b3989b2beadd8c2b523e6269d4002cf1a4a5bf703b"},
+    {file = "dataclass_wizard-0.39.1.tar.gz", hash = "sha256:1679948ed7c62103f40b34df97d03b35e6b2ad50f58173fdbe30074e2e4730f2"},
+]
+
+[package.dependencies]
+typing-extensions = {version = ">=4.13.0", markers = "python_version <= \"3.12\""}
+
+[package.extras]
+all = ["PyYAML (>=6,<7)", "Sphinx (==7.4.7) ; python_version == \"3.9\"", "Sphinx (==8.1.3) ; python_version >= \"3.10\"", "attrs (==25.4.0)", "bump-my-version (==1.2.5)", "coverage (>=6.2)", "dacite (==1.9.2)", "dataclass-factory (==2.16)", "dataclasses-json (==0.6.7)", "flake8 (>=3)", "jsons (==1.6.3)", "mashumaro (==3.17)", "matplotlib", "mypy (>=1.19,<2)", "pydantic (==2.12.5)", "pytest (==8.3.4)", "pytest-benchmark[histogram]", "pytest-cov (==6.0.0)", "pytest-mock (>=3.6.1)", "python-dotenv (>=1,<2)", "pytimeparse (==1.1.8)", "pytimeparse (>=1.1.7)", "sphinx-autodoc-typehints (==2.5.0) ; python_version >= \"3.10\"", "sphinx-copybutton (==0.5.2)", "sphinx-issues (==5.0.0)", "tomli (>=2,<3) ; python_version == \"3.10\"", "tomli (>=2,<3) ; python_version == \"3.9\"", "tomli-w (>=1,<2)", "tox (==4.23.2)", "twine (==6.0.1)", "typing-extensions (>=4.9.0)", "tzdata (>=2024.1) ; platform_system == \"Windows\"", "watchdog[watchmedo] (==6.0.0)", "wheel (==0.45.1)"]
+bench = ["attrs (==25.4.0)", "dacite (==1.9.2)", "dataclass-factory (==2.16)", "dataclasses-json (==0.6.7)", "jsons (==1.6.3)", "mashumaro (==3.17)", "matplotlib", "pydantic (==2.12.5)", "pytest-benchmark[histogram]"]
+dev = ["Sphinx (==7.4.7) ; python_version == \"3.9\"", "Sphinx (==8.1.3) ; python_version >= \"3.10\"", "bump-my-version (==1.2.5)", "coverage (>=6.2)", "dataclass-wizard[toml]", "flake8 (>=3)", "mypy (>=1.19,<2)", "pip (>=21.3.1)", "python-dotenv (>=1,<2)", "pytimeparse (==1.1.8)", "tomli (>=2,<3) ; python_version == \"3.10\"", "tomli (>=2,<3) ; python_version == \"3.9\"", "tomli-w (>=1,<2)", "tox (==4.23.2)", "twine (==6.0.1)", "tzdata (>=2024.1) ; platform_system == \"Windows\"", "watchdog[watchmedo] (==6.0.0)", "wheel (==0.45.1)"]
+docs = ["sphinx-autodoc-typehints (==2.5.0) ; python_version >= \"3.10\"", "sphinx-copybutton (==0.5.2)", "sphinx-issues (==5.0.0)", "typing-extensions (>=4.9.0)"]
+dotenv = ["python-dotenv (>=1,<2)"]
+test = ["pytest (==8.3.4)", "pytest-cov (==6.0.0)", "pytest-mock (>=3.6.1)", "tzdata (>=2024.1) ; platform_system == \"Windows\""]
+timedelta = ["pytimeparse (>=1.1.7)"]
+toml = ["tomli (>=2,<3) ; python_version == \"3.10\"", "tomli (>=2,<3) ; python_version == \"3.9\"", "tomli-w (>=1,<2)"]
+tz = ["tzdata (>=2024.1)"]
+yaml = ["PyYAML (>=6,<7)"]
+
+[[package]]
 name = "dateparser"
 version = "1.2.2"
 description = "Date parsing library designed to parse dates from HTML pages"
@@ -701,7 +771,7 @@ description = "Distro - an OS platform information API"
 optional = true
 python-versions = ">=3.6"
 groups = ["main"]
-markers = "extra == \"llm\" or extra == \"all\""
+markers = "extra == \"llm\" or extra == \"llm-bedrock\" or extra == \"all\""
 files = [
     {file = "distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"},
     {file = "distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed"},
@@ -714,7 +784,7 @@ description = "Parse Python docstrings in reST, Google and Numpydoc format"
 optional = true
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "extra == \"llm\" or extra == \"all\""
+markers = "extra == \"llm\" or extra == \"llm-bedrock\" or extra == \"all\""
 files = [
     {file = "docstring_parser-0.17.0-py3-none-any.whl", hash = "sha256:cf2569abd23dce8099b300f9b4fa8191e9582dda731fd533daf54c4551658708"},
     {file = "docstring_parser-0.17.0.tar.gz", hash = "sha256:583de4a309722b3315439bb31d64ba3eebada841f2e2cee23b99df001434c912"},
@@ -1272,7 +1342,7 @@ description = "Fast iterable JSON parser."
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "extra == \"llm\" or extra == \"all\""
+markers = "extra == \"llm\" or extra == \"llm-bedrock\" or extra == \"all\""
 files = [
     {file = "jiter-0.12.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:e7acbaba9703d5de82a2c98ae6a0f59ab9770ab5af5fa35e43a303aee962cf65"},
     {file = "jiter-0.12.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:364f1a7294c91281260364222f535bc427f56d4de1d8ffd718162d21fbbd602e"},
@@ -1376,6 +1446,19 @@ files = [
     {file = "jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d96b264ab7d34bbb2312dedc47ce07cd53f06835eacbc16dde3761f47c3a9e7f"},
     {file = "jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c24e864cb30ab82311c6425655b0cdab0a98c5d973b065c66a3f020740c2324c"},
     {file = "jiter-0.12.0.tar.gz", hash = "sha256:64dfcd7d5c168b38d3f9f8bba7fc639edb3418abcc74f22fdbe6b8938293f30b"},
+]
+
+[[package]]
+name = "jmespath"
+version = "1.1.0"
+description = "JSON Matching Expressions"
+optional = true
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "extra == \"llm-bedrock\""
+files = [
+    {file = "jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64"},
+    {file = "jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d"},
 ]
 
 [[package]]
@@ -2984,7 +3067,7 @@ description = "Extensions to the standard Python datetime module"
 optional = true
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
 groups = ["main"]
-markers = "extra == \"web\" or extra == \"all\""
+markers = "extra == \"web\" or extra == \"all\" or extra == \"llm-bedrock\""
 files = [
     {file = "python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3"},
     {file = "python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"},
@@ -3519,6 +3602,25 @@ files = [
 ]
 
 [[package]]
+name = "s3transfer"
+version = "0.16.0"
+description = "An Amazon S3 Transfer Manager"
+optional = true
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "extra == \"llm-bedrock\""
+files = [
+    {file = "s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe"},
+    {file = "s3transfer-0.16.0.tar.gz", hash = "sha256:8e990f13268025792229cd52fa10cb7163744bf56e719e0b9cb925ab79abf920"},
+]
+
+[package.dependencies]
+botocore = ">=1.37.4,<2.0a.0"
+
+[package.extras]
+crt = ["botocore[crt] (>=1.37.4,<2.0a.0)"]
+
+[[package]]
 name = "safetensors"
 version = "0.7.0"
 description = ""
@@ -3788,7 +3890,7 @@ description = "Sniff out which async library your code is running under"
 optional = true
 python-versions = ">=3.7"
 groups = ["main"]
-markers = "extra == \"llm\" or extra == \"all\""
+markers = "extra == \"llm\" or extra == \"llm-bedrock\" or extra == \"all\""
 files = [
     {file = "sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2"},
     {file = "sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc"},
@@ -3963,6 +4065,24 @@ files = [
     {file = "tld-0.13.1-py2.py3-none-any.whl", hash = "sha256:a2d35109433ac83486ddf87e3c4539ab2c5c2478230e5d9c060a18af4b03aa7c"},
     {file = "tld-0.13.1.tar.gz", hash = "sha256:75ec00936cbcf564f67361c41713363440b6c4ef0f0c1592b5b0fbe72c17a350"},
 ]
+
+[[package]]
+name = "todoist-api-python"
+version = "3.2.1"
+description = "Official Python SDK for the Todoist API."
+optional = true
+python-versions = "~=3.9"
+groups = ["main"]
+markers = "extra == \"todoist\" or extra == \"all\""
+files = [
+    {file = "todoist_api_python-3.2.1-py3-none-any.whl", hash = "sha256:1091e9b557291380abd79245efe961b0f2261c7b4eb16e52beccfc6357320e95"},
+    {file = "todoist_api_python-3.2.1.tar.gz", hash = "sha256:22c60230cc616437846f9a6469dddd97548545ef916d2bea98b2ca2f522d92f9"},
+]
+
+[package.dependencies]
+annotated-types = "*"
+dataclass-wizard = ">=0.35.0,<1.0"
+requests = ">=2.32.3,<3"
 
 [[package]]
 name = "tokenizers"
@@ -4730,14 +4850,16 @@ test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_it
 type = ["pytest-mypy"]
 
 [extras]
-all = ["anthropic", "pymupdf", "python-docx", "trafilatura"]
+all = ["anthropic", "pymupdf", "python-docx", "todoist-api-python", "trafilatura"]
 dev = ["pytest", "ruff"]
 docx = ["python-docx"]
 llm = ["anthropic"]
+llm-bedrock = ["anthropic", "boto3", "botocore"]
 pdf = ["pymupdf"]
+todoist = ["todoist-api-python"]
 web = ["trafilatura"]
 
 [metadata]
 lock-version = "2.1"
-python-versions = ">=3.11"
-content-hash = "9ea99e127d96f15bec796f98d15dd48468a42abd87b47af27f6f1431257f4ee2"
+python-versions = ">=3.11,<4.0"
+content-hash = "0fee98cf4f96d8476eb90202056ff79af455a2a37dbb08f4ba723de0047cd0c2"

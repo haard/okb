@@ -1,6 +1,6 @@
 [project]
 name = "okb"
-version = "1.0.0"
+version = "1.1.0a0"
 description = "Personal knowledge base with semantic search for LLMs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,11 @@ dependencies = [
     "PyGithub>=2.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/username/okb"
+Repository = "https://github.com/username/okb"
+Issues = "https://github.com/username/okb/issues"
+
 [project.optional-dependencies]
 pdf = ["pymupdf>=1.23.0"]
 docx = ["python-docx>=1.1.0"]
@@ -29,11 +34,13 @@ llm-bedrock = [
       "boto3>=1.28.0",
       "botocore>=1.31.0",
   ]
+todoist = ["todoist-api-python>=3.0.0"]
 all = [
     "pymupdf>=1.23.0",
     "python-docx>=1.1.0",
     "trafilatura>=1.6.0",
     "anthropic>=0.40.0",
+    "todoist-api-python>=3.0.0",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -59,6 +66,7 @@ okb = "okb.cli:main"
 # Built-in sources
 dropbox-paper = "okb.plugins.sources.dropbox_paper:DropboxPaperSource"
 github = "okb.plugins.sources.github:GitHubSource"
+todoist = "okb.plugins.sources.todoist:TodoistSource"
 # External plugins register additional API sources here
 
 [build-system]
@@ -67,6 +75,9 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 packages = [{include = "okb"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
 
 [tool.ruff]
 line-length = 100

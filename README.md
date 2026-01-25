@@ -50,6 +50,7 @@ okb ingest ~/notes ~/docs
 | `okb token list` | List tokens for a database |
 | `okb token revoke` | Revoke an API token |
 | `okb sync list` | List available API sources (plugins) |
+| `okb sync list-projects <source>` | List projects from source (for config) |
 | `okb sync run <sources>` | Sync data from external APIs |
 | `okb sync status` | Show last sync times |
 | `okb rescan` | Check indexed files for changes, re-ingest stale |
@@ -342,6 +343,13 @@ plugins:
       enabled: true
       token: ${GITHUB_TOKEN}  # Resolved from environment
       repos: [owner/repo1, owner/repo2]
+    todoist:
+      enabled: true
+      token: ${TODOIST_TOKEN}
+      include_completed: false     # Sync completed tasks
+      completed_days: 30           # Days of completed history
+      include_comments: false      # Include task comments (1 API call per task)
+      project_filter: []           # List of project IDs (use sync list-projects to find)
     dropbox-paper:
       enabled: true
       token: ${DROPBOX_TOKEN}

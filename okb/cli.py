@@ -968,6 +968,53 @@ def sync_list():
             click.echo(f"  {name}")
 
 
+@sync.command("list-projects")
+@click.argument("source")
+def sync_list_projects(source: str):
+    """List projects from an API source (for finding project IDs).
+
+    Example: okb sync list-projects todoist
+    """
+    from .plugins.registry import PluginRegistry
+
+    # Get the plugin
+    source_obj = PluginRegistry.get_source(source)
+    if source_obj is None:
+        click.echo(f"Error: Source '{source}' not found.", err=True)
+        click.echo(f"Installed sources: {', '.join(PluginRegistry.list_sources())}")
+        sys.exit(1)
+
+    # Check if source supports list_projects
+    if not hasattr(source_obj, "list_projects"):
+        click.echo(f"Error: Source '{source}' does not support listing projects.", err=True)
+        sys.exit(1)
+
+    # Get and resolve config
+    source_cfg = config.get_source_config(source)
+    if source_cfg is None:
+        click.echo(f"Error: Source '{source}' not configured.", err=True)
+        click.echo("Add it to your config file under plugins.sources")
+        sys.exit(1)
+
+    try:
+        source_obj.configure(source_cfg)
+    except Exception as e:
+        click.echo(f"Error configuring '{source}': {e}", err=True)
+        sys.exit(1)
+
+    try:
+        projects = source_obj.list_projects()
+        if projects:
+            click.echo(f"Projects in {source}:")
+            for project_id, name in projects:
+                click.echo(f"  {project_id}: {name}")
+        else:
+            click.echo("No projects found.")
+    except Exception as e:
+        click.echo(f"Error listing projects: {e}", err=True)
+        sys.exit(1)
+
+
 @sync.command("status")
 @click.argument("source", required=False)
 @click.option("--db", "database", default=None, help="Database to check")
