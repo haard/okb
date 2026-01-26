@@ -201,7 +201,7 @@ Then configure Claude Code to connect via SSE:
 }
 ```
 
-## MCP Tools (Available in Claude Code)
+## MCP Tools available to LLM
 
 | Tool | Purpose |
 |------|---------|
@@ -215,6 +215,11 @@ Then configure Claude Code to connect via SSE:
 | `save_knowledge` | Save knowledge from Claude for future reference |
 | `delete_knowledge` | Delete a Claude-saved knowledge entry |
 | `get_actionable_items` | Query tasks/events with structured filters |
+| `get_database_info` | Get database description, topics, and stats |
+| `set_database_description` | Update database description/topics (LLM can self-document) |
+| `add_todo` | Create a TODO item in the knowledge base |
+| `trigger_sync` | Sync API sources (Todoist, GitHub, Dropbox Paper) |
+| `trigger_rescan` | Check indexed files for changes and re-ingest |
 
 ## Contextual Chunking
 
@@ -237,32 +242,6 @@ project: student-app
 category: backend
 ---
 
-# Query Optimization
-
-Use `select_related()` for foreign keys...
-```
-
-## Cost Estimate
-
-| Component | Local | Cloud Alternative |
-|-----------|-------|-------------------|
-| pgvector | $0 | ~$15-30/mo (CloudSQL) |
-| MCP Server | $0 | ~$5/mo (small VM) |
-| Modal embedding | ~$0.50-2/mo | N/A |
-| **Total** | **~$1-2/mo** | **~$20-35/mo** |
-
-## Development
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Lint and format
-ruff check . && ruff format .
-```
 
 ## Plugin System
 
