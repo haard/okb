@@ -49,6 +49,8 @@ WRITE_TOOLS = frozenset(
         "delete_knowledge",
         "set_database_description",
         "add_todo",
+        "trigger_sync",
+        "trigger_rescan",
     }
 )
 
@@ -348,6 +350,49 @@ class HTTPMCPServer:
                 return CallToolResult(
                     content=[TextContent(type="text", text="No fields provided to update.")]
                 )
+
+            elif name == "add_todo":
+                result = kb.save_todo(
+                    title=arguments["title"],
+                    content=arguments.get("content"),
+                    due_date=arguments.get("due_date"),
+                    priority=arguments.get("priority"),
+                    project=arguments.get("project"),
+                    tags=arguments.get("tags"),
+                )
+                parts = [
+                    "TODO created:",
+                    f"- Title: {result['title']}",
+                    f"- Path: `{result['source_path']}`",
+                ]
+                if result.get("priority"):
+                    parts.append(f"- Priority: P{result['priority']}")
+                if result.get("due_date"):
+                    parts.append(f"- Due: {result['due_date']}")
+                return CallToolResult(content=[TextContent(type="text", text="\n".join(parts))])
+
+            elif name == "trigger_sync":
+                from .mcp_server import _run_sync
+
+                # Get the db_url from the knowledge base
+                result = _run_sync(
+                    kb.db_url,
+                    sources=arguments.get("sources", []),
+                    sync_all=arguments.get("all", False),
+                    full=arguments.get("full", False),
+                    doc_ids=arguments.get("doc_ids"),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "trigger_rescan":
+                from .mcp_server import _run_rescan
+
+                result = _run_rescan(
+                    kb.db_url,
+                    dry_run=arguments.get("dry_run", False),
+                    delete_missing=arguments.get("delete_missing", False),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
 
             else:
                 return CallToolResult(

@@ -4,15 +4,14 @@ A local-first semantic search system for personal documents with Claude Code int
 
 ## Installation
 
+pipx - preferred!
 ```bash
-pip install okb
+pipx install okb
 ```
 
-Or from source:
+Or pip:
 ```bash
-git clone https://github.com/yourusername/okb
-cd okb
-pip install -e .
+pip install okb
 ```
 
 ## Quick Start
@@ -39,7 +38,7 @@ okb ingest ~/notes ~/docs
 | `okb db status` | Show database status |
 | `okb db destroy` | Remove container and volume (destructive) |
 | `okb ingest <paths>` | Ingest documents into knowledge base |
-| `okb ingest <paths> --local` | Ingest using CPU embedding (no Modal) |
+| `okb ingest <paths> --local` | Ingest using local GPU/CPU embedding (no Modal) |
 | `okb serve` | Start MCP server (stdio, for Claude Code) |
 | `okb serve --http` | Start HTTP MCP server with token auth |
 | `okb watch <paths>` | Watch directories for changes |
@@ -52,6 +51,7 @@ okb ingest ~/notes ~/docs
 | `okb sync list` | List available API sources (plugins) |
 | `okb sync list-projects <source>` | List projects from source (for config) |
 | `okb sync run <sources>` | Sync data from external APIs |
+| `okb sync auth <source>` | Interactive OAuth setup (e.g., dropbox-paper) |
 | `okb sync status` | Show last sync times |
 | `okb rescan` | Check indexed files for changes, re-ingest stale |
 | `okb rescan --dry-run` | Show what would change without executing |
@@ -60,36 +60,6 @@ okb ingest ~/notes ~/docs
 | `okb llm deploy` | Deploy Modal LLM for open model inference |
 | `okb llm clear-cache` | Clear LLM response cache |
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         INGESTION (Burst GPU)                       │
-│                                                                     │
-│  Local Files → Contextual Chunking → Modal (GPU T4) → pgvector     │
-│                                                                     │
-│  ~/notes/project-x/api-design.md                                   │
-│       ↓                                                             │
-│  "Document: API Design Notes                                        │
-│   Project: project-x                                                │
-│   Section: Authentication                                           │
-│   Content: Use JWT tokens with..."                                  │
-│       ↓                                                             │
-│  [0.23, -0.41, 0.87, ...]  → pgvector                              │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│                      RETRIEVAL (Always-on, Local)                   │
-│                                                                     │
-│  Claude Code → MCP Server → CPU Embedding → pgvector → Results     │
-│                                                                     │
-│  "How do I handle auth?"                                            │
-│       ↓                                                             │
-│  [0.19, -0.38, 0.91, ...]  (local CPU, ~300ms)                     │
-│       ↓                                                             │
-│  Cosine similarity search → Top 5 chunks with context              │
-└─────────────────────────────────────────────────────────────────────┘
-```
 
 ## Configuration
 
@@ -352,9 +322,20 @@ plugins:
       project_filter: []           # List of project IDs (use sync list-projects to find)
     dropbox-paper:
       enabled: true
-      token: ${DROPBOX_TOKEN}
+      # Option 1: Refresh token (recommended, auto-refreshes)
+      app_key: ${DROPBOX_APP_KEY}
+      app_secret: ${DROPBOX_APP_SECRET}
+      refresh_token: ${DROPBOX_REFRESH_TOKEN}
+      # Option 2: Access token (short-lived, expires after ~4 hours)
+      # token: ${DROPBOX_TOKEN}
       folders: [/]            # Optional: filter to specific folders
 ```
+
+**Dropbox Paper OAuth Setup:**
+```bash
+okb sync auth dropbox-paper
+```
+This interactive command will guide you through getting a refresh token from Dropbox.
 
 ## License
 

@@ -16,17 +16,27 @@ class DropboxPaperSource:
 
     Syncs Paper documents as markdown for searchable knowledge base entries.
 
-    Config example:
+    Config example (refresh token - recommended):
         plugins:
           sources:
             dropbox-paper:
               enabled: true
-              token: ${DROPBOX_TOKEN}
+              app_key: ${DROPBOX_APP_KEY}
+              app_secret: ${DROPBOX_APP_SECRET}
+              refresh_token: ${DROPBOX_REFRESH_TOKEN}
               folders: [/]  # Optional: filter to specific folder paths
 
+    Config example (access token - short-lived):
+        plugins:
+          sources:
+            dropbox-paper:
+              enabled: true
+              token: ${DROPBOX_TOKEN}  # Expires after ~4 hours
+
     Usage:
-        lkb sync run dropbox-paper
-        lkb sync run dropbox-paper --full  # Ignore incremental state
+        okb sync run dropbox-paper
+        okb sync run dropbox-paper --full  # Ignore incremental state
+        okb sync run dropbox-paper --doc <doc_id>  # Sync specific document
     """
 
     name = "dropbox-paper"
@@ -38,18 +48,43 @@ class DropboxPaperSource:
         self._doc_ids: list[str] | None = None
 
     def configure(self, config: dict) -> None:
-        """Initialize Dropbox client with OAuth token.
+        """Initialize Dropbox client with OAuth token or refresh token.
+
+        Supports two authentication modes:
+        1. Access token only (short-lived, will expire):
+           token: <access_token>
+
+        2. Refresh token (recommended, auto-refreshes):
+           app_key: <app_key>
+           app_secret: <app_secret>
+           refresh_token: <refresh_token>
 
         Args:
-            config: Source configuration containing 'token' and optional 'folders' or 'doc_ids'
+            config: Source configuration containing auth credentials and optional 'folders'/'doc_ids'
         """
         import dropbox
 
+        app_key = config.get("app_key")
+        app_secret = config.get("app_secret")
+        refresh_token = config.get("refresh_token")
         token = config.get("token")
-        if not token:
-            raise ValueError("dropbox-paper source requires 'token' in config")
 
-        self._client = dropbox.Dropbox(token)
+        if app_key and app_secret and refresh_token:
+            # Use refresh token - will auto-refresh access tokens
+            self._client = dropbox.Dropbox(
+                app_key=app_key,
+                app_secret=app_secret,
+                oauth2_refresh_token=refresh_token,
+            )
+        elif token:
+            # Legacy: direct access token (will expire)
+            self._client = dropbox.Dropbox(token)
+        else:
+            raise ValueError(
+                "dropbox-paper source requires either 'token' or "
+                "'app_key'/'app_secret'/'refresh_token' in config"
+            )
+
         self._folders = config.get("folders")
         self._doc_ids = config.get("doc_ids")  # Specific doc IDs from CLI
 

@@ -1015,6 +1015,85 @@ def sync_list_projects(source: str):
         sys.exit(1)
 
 
+@sync.command("auth")
+@click.argument("source")
+def sync_auth(source: str):
+    """Authenticate with an API source (get tokens).
+
+    Currently supports: dropbox-paper
+
+    Example: okb sync auth dropbox-paper
+    """
+    if source == "dropbox-paper":
+        _auth_dropbox()
+    else:
+        click.echo(f"Error: Authentication helper not available for '{source}'", err=True)
+        click.echo("Supported: dropbox-paper")
+        sys.exit(1)
+
+
+def _auth_dropbox():
+    """Interactive OAuth flow for Dropbox."""
+    try:
+        import dropbox
+        from dropbox import DropboxOAuth2FlowNoRedirect
+    except ImportError:
+        click.echo("Error: dropbox package not installed", err=True)
+        click.echo("Install with: pip install dropbox", err=True)
+        sys.exit(1)
+
+    click.echo("Dropbox OAuth Setup")
+    click.echo("=" * 50)
+    click.echo("")
+    click.echo("You'll need your Dropbox app credentials.")
+    click.echo("Get them at: https://www.dropbox.com/developers/apps")
+    click.echo("")
+
+    app_key = click.prompt("App key")
+    app_secret = click.prompt("App secret")
+
+    # Start OAuth flow
+    auth_flow = DropboxOAuth2FlowNoRedirect(
+        app_key,
+        app_secret,
+        token_access_type="offline",  # This gives us a refresh token
+    )
+
+    authorize_url = auth_flow.start()
+    click.echo("")
+    click.echo("1. Go to this URL in your browser:")
+    click.echo(f"   {authorize_url}")
+    click.echo("")
+    click.echo("2. Click 'Allow' to authorize the app")
+    click.echo("3. Copy the authorization code")
+    click.echo("")
+
+    auth_code = click.prompt("Enter the authorization code")
+
+    try:
+        oauth_result = auth_flow.finish(auth_code.strip())
+    except Exception as e:
+        click.echo(f"Error: Failed to get tokens - {e}", err=True)
+        sys.exit(1)
+
+    click.echo("")
+    click.echo("Success! Add these to your environment or config:")
+    click.echo("")
+    click.echo(f"DROPBOX_APP_KEY={app_key}")
+    click.echo(f"DROPBOX_APP_SECRET={app_secret}")
+    click.echo(f"DROPBOX_REFRESH_TOKEN={oauth_result.refresh_token}")
+    click.echo("")
+    click.echo("Config example (~/.config/okb/config.yaml):")
+    click.echo("")
+    click.echo("plugins:")
+    click.echo("  sources:")
+    click.echo("    dropbox-paper:")
+    click.echo("      enabled: true")
+    click.echo("      app_key: ${DROPBOX_APP_KEY}")
+    click.echo("      app_secret: ${DROPBOX_APP_SECRET}")
+    click.echo("      refresh_token: ${DROPBOX_REFRESH_TOKEN}")
+
+
 @sync.command("status")
 @click.argument("source", required=False)
 @click.option("--db", "database", default=None, help="Database to check")

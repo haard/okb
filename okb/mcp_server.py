@@ -676,6 +676,170 @@ class KnowledgeBase:
         return [dict(r) for r in results]
 
 
+def _get_sync_state(conn, source_name: str, db_name: str):
+    """Get sync state from database."""
+    from .plugins.base import SyncState
+
+    result = conn.execute(
+        """SELECT last_sync, cursor, extra FROM sync_state
+           WHERE source_name = %s AND database_name = %s""",
+        (source_name, db_name),
+    ).fetchone()
+
+    if result:
+        return SyncState(
+            last_sync=result["last_sync"],
+            cursor=result["cursor"],
+            extra=result["extra"] or {},
+        )
+    return None
+
+
+def _save_sync_state(conn, source_name: str, db_name: str, state):
+    """Save sync state to database."""
+    import json
+
+    conn.execute(
+        """INSERT INTO sync_state (source_name, database_name, last_sync, cursor, extra, updated_at)
+           VALUES (%s, %s, %s, %s, %s, NOW())
+           ON CONFLICT (source_name, database_name)
+           DO UPDATE SET last_sync = EXCLUDED.last_sync,
+                        cursor = EXCLUDED.cursor,
+                        extra = EXCLUDED.extra,
+                        updated_at = NOW()""",
+        (source_name, db_name, state.last_sync, state.cursor, json.dumps(state.extra)),
+    )
+    conn.commit()
+
+
+def _run_sync(
+    db_url: str,
+    sources: list[str],
+    sync_all: bool = False,
+    full: bool = False,
+    doc_ids: list[str] | None = None,
+) -> str:
+    """Run sync for specified sources and return formatted result."""
+    from psycopg.rows import dict_row
+
+    from .ingest import Ingester
+    from .plugins.registry import PluginRegistry
+
+    # Determine which sources to sync
+    if sync_all:
+        source_names = config.list_enabled_sources()
+    elif sources:
+        source_names = list(sources)
+    else:
+        # Return list of available sources
+        installed = PluginRegistry.list_sources()
+        configured = config.list_enabled_sources()
+        lines = ["Available API sources:"]
+        for name in installed:
+            status = "enabled" if name in configured else "disabled"
+            lines.append(f"  - {name} ({status})")
+        if not installed:
+            lines.append("  (none installed)")
+        return "\n".join(lines)
+
+    if not source_names:
+        return "No sources to sync."
+
+    # Get database name from URL for sync state
+    db_name = config.get_database().name
+
+    results = []
+    ingester = Ingester(db_url, use_modal=True)
+
+    with psycopg.connect(db_url, row_factory=dict_row) as conn:
+        for source_name in source_names:
+            # Get the plugin
+            source = PluginRegistry.get_source(source_name)
+            if source is None:
+                results.append(f"{source_name}: not found")
+                continue
+
+            # Get and resolve config
+            source_cfg = config.get_source_config(source_name)
+            if source_cfg is None:
+                results.append(f"{source_name}: not configured or disabled")
+                continue
+
+            # Inject doc_ids if provided (for sources that support it)
+            if doc_ids:
+                source_cfg = {**source_cfg, "doc_ids": doc_ids}
+
+            try:
+                source.configure(source_cfg)
+            except Exception as e:
+                results.append(f"{source_name}: config error - {e}")
+                continue
+
+            # Get sync state (unless full)
+            state = None if full else _get_sync_state(conn, source_name, db_name)
+
+            try:
+                documents, new_state = source.fetch(state)
+            except Exception as e:
+                results.append(f"{source_name}: fetch error - {e}")
+                continue
+
+            if documents:
+                ingester.ingest_documents(documents)
+                results.append(f"{source_name}: synced {len(documents)} documents")
+            else:
+                results.append(f"{source_name}: no new documents")
+
+            # Save state
+            _save_sync_state(conn, source_name, db_name, new_state)
+
+    return "\n".join(results)
+
+
+def _run_rescan(
+    db_url: str,
+    dry_run: bool = False,
+    delete_missing: bool = False,
+) -> str:
+    """Run rescan and return formatted result."""
+    from .rescan import Rescanner
+
+    rescanner = Rescanner(db_url, use_modal=True)
+    result = rescanner.rescan(dry_run=dry_run, delete_missing=delete_missing, verbose=False)
+
+    lines = []
+    if dry_run:
+        lines.append("(dry run - no changes made)")
+
+    if result.updated:
+        lines.append(f"Updated: {len(result.updated)} files")
+        for path in result.updated[:5]:  # Show first 5
+            lines.append(f"  - {path}")
+        if len(result.updated) > 5:
+            lines.append(f"  ... and {len(result.updated) - 5} more")
+
+    if result.deleted:
+        lines.append(f"Deleted: {len(result.deleted)} files")
+
+    if result.missing:
+        lines.append(f"Missing (not deleted): {len(result.missing)} files")
+        for path in result.missing[:5]:
+            lines.append(f"  - {path}")
+        if len(result.missing) > 5:
+            lines.append(f"  ... and {len(result.missing) - 5} more")
+
+    lines.append(f"Unchanged: {result.unchanged} files")
+
+    if result.errors:
+        lines.append(f"Errors: {len(result.errors)}")
+        for path, error in result.errors[:3]:
+            lines.append(f"  - {path}: {error}")
+        if len(result.errors) > 3:
+            lines.append(f"  ... and {len(result.errors) - 3} more")
+
+    return "\n".join(lines) if lines else "No indexed files found."
+
+
 def build_server_instructions(db_config) -> str | None:
     """Build server instructions from database config and LLM metadata."""
     parts = []
@@ -1025,6 +1189,67 @@ async def list_tools() -> list[Tool]:
                 "required": ["title"],
             },
         ),
+        Tool(
+            name="trigger_sync",
+            description=(
+                "Trigger sync of API sources (Todoist, GitHub, Dropbox Paper, etc.). "
+                "Fetches new/updated content from external services. Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of source names to sync (e.g., ['todoist', 'github']). "
+                            "If empty and 'all' is false, returns list of available sources."
+                        ),
+                    },
+                    "all": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Sync all enabled sources",
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Ignore incremental state and do full resync",
+                    },
+                    "doc_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Specific document IDs to sync (for dropbox-paper). "
+                            "If provided, only these documents are synced."
+                        ),
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="trigger_rescan",
+            description=(
+                "Check indexed files for changes and re-ingest stale ones. "
+                "Compares stored modification times with current filesystem. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Only report what would change, don't actually re-ingest",
+                    },
+                    "delete_missing": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Remove documents for files that no longer exist",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -1357,6 +1582,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             if result.get("due_date"):
                 parts.append(f"- Due: {result['due_date']}")
             return CallToolResult(content=[TextContent(type="text", text="\n".join(parts))])
+
+        elif name == "trigger_sync":
+            result = _run_sync(
+                kb.db_url,
+                sources=arguments.get("sources", []),
+                sync_all=arguments.get("all", False),
+                full=arguments.get("full", False),
+                doc_ids=arguments.get("doc_ids"),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "trigger_rescan":
+            result = _run_rescan(
+                kb.db_url,
+                dry_run=arguments.get("dry_run", False),
+                delete_missing=arguments.get("delete_missing", False),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
 
         else:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
