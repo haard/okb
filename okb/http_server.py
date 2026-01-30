@@ -40,6 +40,7 @@ READ_ONLY_TOOLS = frozenset(
         "recent_documents",
         "get_actionable_items",
         "get_database_info",
+        "list_sync_sources",
     }
 )
 
@@ -392,6 +393,14 @@ class HTTPMCPServer:
                     dry_run=arguments.get("dry_run", False),
                     delete_missing=arguments.get("delete_missing", False),
                 )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "list_sync_sources":
+                from .mcp_server import _list_sync_sources
+
+                token_info = getattr(self.server, "_current_token_info", None)
+                db_name = token_info.database if token_info else config.get_database().name
+                result = _list_sync_sources(kb.db_url, db_name)
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
             else:

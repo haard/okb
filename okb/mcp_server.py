@@ -840,6 +840,50 @@ def _run_rescan(
     return "\n".join(lines) if lines else "No indexed files found."
 
 
+def _list_sync_sources(db_url: str, db_name: str) -> str:
+    """List available sync sources with status and last sync time."""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from .plugins.registry import PluginRegistry
+
+    installed = PluginRegistry.list_sources()
+    enabled = set(config.list_enabled_sources())
+
+    if not installed:
+        return "No API sync sources installed."
+
+    # Get last sync times from database
+    last_syncs = {}
+    try:
+        with psycopg.connect(db_url, row_factory=dict_row) as conn:
+            results = conn.execute(
+                """SELECT source_name, last_sync FROM sync_state WHERE database_name = %s""",
+                (db_name,),
+            ).fetchall()
+            last_syncs = {r["source_name"]: r["last_sync"] for r in results}
+    except Exception:
+        pass  # Database may not be accessible
+
+    lines = ["## API Sync Sources\n"]
+
+    for name in sorted(installed):
+        source = PluginRegistry.get_source(name)
+        status = "enabled" if name in enabled else "disabled"
+        source_type = source.source_type if source else "unknown"
+
+        last_sync = last_syncs.get(name)
+        if last_sync:
+            last_sync_str = format_relative_time(last_sync.isoformat())
+        else:
+            last_sync_str = "never"
+
+        lines.append(f"- **{name}** ({status}) - {source_type}")
+        lines.append(f"  Last sync: {last_sync_str}")
+
+    return "\n".join(lines)
+
+
 def build_server_instructions(db_config) -> str | None:
     """Build server instructions from database config and LLM metadata."""
     parts = []
@@ -1250,6 +1294,18 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="list_sync_sources",
+            description=(
+                "List available API sync sources (Todoist, GitHub, Dropbox Paper, etc.) "
+                "with their enabled/disabled status and last sync time. "
+                "Use this to see what external data sources can be synced."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -1599,6 +1655,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 dry_run=arguments.get("dry_run", False),
                 delete_missing=arguments.get("delete_missing", False),
             )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "list_sync_sources":
+            db_name = config.get_database().name
+            result = _list_sync_sources(kb.db_url, db_name)
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         else:
