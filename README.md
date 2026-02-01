@@ -59,6 +59,11 @@ okb ingest ~/notes ~/docs
 | `okb llm status` | Show LLM config and connectivity |
 | `okb llm deploy` | Deploy Modal LLM for open model inference |
 | `okb llm clear-cache` | Clear LLM response cache |
+| `okb enrich run` | Extract TODOs and entities from documents |
+| `okb enrich run --dry-run` | Show what would be enriched |
+| `okb enrich pending` | List entities awaiting review |
+| `okb enrich approve <id>` | Approve a pending entity |
+| `okb enrich reject <id>` | Reject a pending entity |
 
 
 ## Configuration
@@ -114,7 +119,7 @@ Merge: scalars replace, lists extend, dicts deep-merge.
 
 ### LLM Integration (Optional)
 
-Enable LLM-based document classification and filtering:
+Enable LLM-based document classification, filtering, and enrichment:
 
 ```yaml
 llm:
@@ -130,11 +135,25 @@ llm:
 | `claude` | `export ANTHROPIC_API_KEY=...` | ~$0.25/1M tokens |
 | `modal` | `okb llm deploy` | ~$0.02/min GPU |
 
-For Modal (no API key needed):
+**Modal LLM Setup** (no API key needed, runs on Modal's GPUs):
+
 ```yaml
 llm:
   provider: modal
-  model: meta-llama/Llama-3.2-3B-Instruct
+  model: microsoft/Phi-3-mini-4k-instruct  # Recommended: no gating
+```
+
+Non-gated models (work immediately):
+- `microsoft/Phi-3-mini-4k-instruct` - Good quality, 4K context
+- `Qwen/Qwen2-1.5B-Instruct` - Smaller/faster
+
+Gated models (require HuggingFace approval + token):
+- `meta-llama/Llama-3.2-3B-Instruct` - Requires accepting license at HuggingFace
+- Setup: `modal secret create huggingface HF_TOKEN=hf_...`
+
+Deploy after configuring:
+```bash
+okb llm deploy
 ```
 
 **Pre-ingest filtering** - skip low-value content during sync:
@@ -146,6 +165,36 @@ plugins:
         enabled: true
         prompt: "Skip meeting notes and drafts"
         action_on_skip: discard  # or "archive"
+```
+
+### Document Enrichment
+
+Extract TODOs and entities (people, projects, technologies) from documents using LLM:
+
+```bash
+okb enrich run                      # Enrich un-enriched documents
+okb enrich run --dry-run            # Preview what would be enriched
+okb enrich run --source-type markdown  # Only markdown files
+okb enrich run --query "meeting"    # Filter by semantic search
+```
+
+Entities are created as pending suggestions for review:
+```bash
+okb enrich pending                  # List pending entities
+okb enrich approve <id>             # Approve → creates entity document
+okb enrich reject <id>              # Reject → hidden from future suggestions
+```
+
+Configure enrichment behavior:
+```yaml
+enrichment:
+  enabled: true
+  extract_todos: true
+  extract_entities: true
+  auto_create_todos: true       # TODOs created immediately
+  auto_create_entities: false   # Entities go to pending review
+  min_confidence_todo: 0.7
+  min_confidence_entity: 0.8
 ```
 
 CLI commands:
@@ -220,6 +269,11 @@ Then configure Claude Code to connect via SSE:
 | `add_todo` | Create a TODO item in the knowledge base |
 | `trigger_sync` | Sync API sources (Todoist, GitHub, Dropbox Paper) |
 | `trigger_rescan` | Check indexed files for changes and re-ingest |
+| `list_sync_sources` | List available API sync sources with status |
+| `enrich_document` | Run LLM enrichment to extract TODOs/entities |
+| `list_pending_entities` | List entities awaiting review |
+| `approve_entity` | Approve a pending entity |
+| `reject_entity` | Reject a pending entity |
 
 ## Contextual Chunking
 

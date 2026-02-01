@@ -281,7 +281,7 @@ DEFAULTS = {
     },
     "llm": {
         # LLM provider configuration
-        # provider: None = disabled, "claude" = Anthropic API
+        # provider: None = disabled, "claude" = Anthropic API, "modal" = Modal GPU
         "provider": None,
         "model": "claude-haiku-4-5-20251001",
         "timeout": 30,
@@ -289,6 +289,38 @@ DEFAULTS = {
         # Bedrock settings (when use_bedrock is True)
         "use_bedrock": False,
         "aws_region": "us-west-2",
+        # Modal settings (when provider is "modal")
+        "modal_gpu": "L4",  # GPU type: T4, L4, A10G, A100, etc.
+    },
+    "enrichment": {
+        # LLM-based document enrichment
+        "enabled": True,
+        "version": 1,  # Increment to force re-enrichment
+        # What to extract
+        "extract_todos": True,
+        "extract_entities": True,
+        # Auto-create behavior
+        "auto_create_todos": True,      # TODOs created immediately
+        "auto_create_entities": False,  # Entities go to pending_entities table
+        # Confidence thresholds
+        "min_confidence_todo": 0.7,
+        "min_confidence_entity": 0.8,
+        # Auto-enrich during ingest (per source type)
+        "auto_enrich": {
+            "markdown": True,
+            "org": True,
+            "text": True,
+            "code": False,      # Skip code files
+            "web": False,       # Skip web pages
+            "todoist-task": False,  # Already structured
+        },
+        # Entity consolidation settings
+        "consolidation": {
+            "cross_doc_min_mentions": 3,       # Min docs for cross-doc detection
+            "embedding_similarity_threshold": 0.85,  # For duplicate detection
+            "auto_merge_threshold": 0.95,      # Auto-approve above this
+            "min_cluster_size": 3,             # Min entities per cluster
+        },
     },
 }
 
@@ -349,6 +381,24 @@ class Config:
     llm_cache_responses: bool = True
     llm_use_bedrock: bool = False
     llm_aws_region: str = "us-west-2"
+    llm_modal_gpu: str = "L4"
+
+    # Enrichment settings (loaded from config in __post_init__)
+    enrichment_enabled: bool = True
+    enrichment_version: int = 1
+    enrichment_extract_todos: bool = True
+    enrichment_extract_entities: bool = True
+    enrichment_auto_create_todos: bool = True
+    enrichment_auto_create_entities: bool = False
+    enrichment_min_confidence_todo: float = 0.7
+    enrichment_min_confidence_entity: float = 0.8
+    enrichment_auto_enrich: dict[str, bool] = field(default_factory=dict)
+
+    # Consolidation settings (loaded from config in __post_init__)
+    consolidation_cross_doc_min_mentions: int = 3
+    consolidation_embedding_similarity_threshold: float = 0.85
+    consolidation_auto_merge_threshold: float = 0.95
+    consolidation_min_cluster_size: int = 3
 
     def __post_init__(self):
         """Load configuration from file and environment."""
@@ -535,6 +585,55 @@ class Config:
         )
         self.llm_use_bedrock = llm_cfg.get("use_bedrock", DEFAULTS["llm"]["use_bedrock"])
         self.llm_aws_region = llm_cfg.get("aws_region", DEFAULTS["llm"]["aws_region"])
+        self.llm_modal_gpu = os.environ.get(
+            "OKB_MODAL_GPU",
+            llm_cfg.get("modal_gpu", DEFAULTS["llm"]["modal_gpu"]),
+        )
+
+        # Enrichment settings
+        enrich_cfg = file_config.get("enrichment", {})
+        self.enrichment_enabled = enrich_cfg.get("enabled", DEFAULTS["enrichment"]["enabled"])
+        self.enrichment_version = enrich_cfg.get("version", DEFAULTS["enrichment"]["version"])
+        self.enrichment_extract_todos = enrich_cfg.get(
+            "extract_todos", DEFAULTS["enrichment"]["extract_todos"]
+        )
+        self.enrichment_extract_entities = enrich_cfg.get(
+            "extract_entities", DEFAULTS["enrichment"]["extract_entities"]
+        )
+        self.enrichment_auto_create_todos = enrich_cfg.get(
+            "auto_create_todos", DEFAULTS["enrichment"]["auto_create_todos"]
+        )
+        self.enrichment_auto_create_entities = enrich_cfg.get(
+            "auto_create_entities", DEFAULTS["enrichment"]["auto_create_entities"]
+        )
+        self.enrichment_min_confidence_todo = enrich_cfg.get(
+            "min_confidence_todo", DEFAULTS["enrichment"]["min_confidence_todo"]
+        )
+        self.enrichment_min_confidence_entity = enrich_cfg.get(
+            "min_confidence_entity", DEFAULTS["enrichment"]["min_confidence_entity"]
+        )
+        self.enrichment_auto_enrich = enrich_cfg.get(
+            "auto_enrich", DEFAULTS["enrichment"]["auto_enrich"]
+        )
+
+        # Consolidation settings
+        consolidation_cfg = enrich_cfg.get("consolidation", {})
+        self.consolidation_cross_doc_min_mentions = consolidation_cfg.get(
+            "cross_doc_min_mentions",
+            DEFAULTS["enrichment"]["consolidation"]["cross_doc_min_mentions"],
+        )
+        self.consolidation_embedding_similarity_threshold = consolidation_cfg.get(
+            "embedding_similarity_threshold",
+            DEFAULTS["enrichment"]["consolidation"]["embedding_similarity_threshold"],
+        )
+        self.consolidation_auto_merge_threshold = consolidation_cfg.get(
+            "auto_merge_threshold",
+            DEFAULTS["enrichment"]["consolidation"]["auto_merge_threshold"],
+        )
+        self.consolidation_min_cluster_size = consolidation_cfg.get(
+            "min_cluster_size",
+            DEFAULTS["enrichment"]["consolidation"]["min_cluster_size"],
+        )
 
     def get_database(self, name: str | None = None) -> DatabaseConfig:
         """Get database config by name, or default if None."""
@@ -648,6 +747,24 @@ class Config:
                 "cache_responses": self.llm_cache_responses,
                 "use_bedrock": self.llm_use_bedrock,
                 "aws_region": self.llm_aws_region,
+                "modal_gpu": self.llm_modal_gpu,
+            },
+            "enrichment": {
+                "enabled": self.enrichment_enabled,
+                "version": self.enrichment_version,
+                "extract_todos": self.enrichment_extract_todos,
+                "extract_entities": self.enrichment_extract_entities,
+                "auto_create_todos": self.enrichment_auto_create_todos,
+                "auto_create_entities": self.enrichment_auto_create_entities,
+                "min_confidence_todo": self.enrichment_min_confidence_todo,
+                "min_confidence_entity": self.enrichment_min_confidence_entity,
+                "auto_enrich": self.enrichment_auto_enrich,
+                "consolidation": {
+                    "cross_doc_min_mentions": self.consolidation_cross_doc_min_mentions,
+                    "embedding_similarity_threshold": self.consolidation_embedding_similarity_threshold,
+                    "auto_merge_threshold": self.consolidation_auto_merge_threshold,
+                    "min_cluster_size": self.consolidation_min_cluster_size,
+                },
             },
         }
 

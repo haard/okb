@@ -2,19 +2,33 @@
 Modal-based GPU LLM service for document classification.
 
 Provides on-demand GPU access for LLM inference using open models.
-Uses Llama 3.2 3B by default - fast and efficient for classification tasks.
 
 Usage:
+    # Deploy with default model (Phi-3)
     modal deploy modal_llm.py
+
+    # Deploy with specific model
+    OKB_LLM_MODEL=meta-llama/Llama-3.2-3B-Instruct modal deploy modal_llm.py
 
 Then call from Python:
     llm = modal.Cls.from_name("knowledge-llm", "LLM")()
     response = llm.complete.remote("Classify this document", system="You are a classifier")
 """
 
+import os
+
 import modal
 
 app = modal.App("knowledge-llm")
+
+# Model is set via environment variable at deploy time
+# Default to Phi-3 which doesn't require HuggingFace approval
+DEFAULT_MODEL = "microsoft/Phi-3-mini-4k-instruct"
+MODEL_ID = os.environ.get("OKB_LLM_MODEL", DEFAULT_MODEL)
+
+# GPU type - L4 recommended for speed/cost balance
+DEFAULT_GPU = "L4"
+GPU_TYPE = os.environ.get("OKB_MODAL_GPU", DEFAULT_GPU)
 
 # Container image with transformers and torch
 llm_image = (
@@ -24,17 +38,19 @@ llm_image = (
         "torch>=2.0.0",
         "accelerate>=0.27.0",
         "bitsandbytes>=0.42.0",  # For quantization
+        "hf_transfer",  # Fast downloads
     )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .env({
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "OKB_LLM_MODEL": MODEL_ID,
+        "OKB_MODAL_GPU": GPU_TYPE,
+    })
 )
-
-# Default model - Llama 3.2 3B is fast and good for classification
-DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
 
 
 @app.cls(
     image=llm_image,
-    gpu="T4",  # T4 is sufficient for 3B model with quantization
+    gpu=GPU_TYPE,
     timeout=300,
     scaledown_window=300,  # Keep warm for 5 min
     retries=1,
@@ -42,14 +58,16 @@ DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
 class LLM:
     """GPU-accelerated LLM for document classification."""
 
-    model_id: str = DEFAULT_MODEL
-
     @modal.enter()
     def load_model(self):
         """Load model once when container starts."""
+        import os
+
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+        # Read model from environment (set at deploy time)
+        self.model_id = os.environ.get("OKB_LLM_MODEL", "microsoft/Phi-3-mini-4k-instruct")
         print(f"Loading model: {self.model_id}")
 
         # Use 4-bit quantization for memory efficiency

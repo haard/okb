@@ -41,6 +41,10 @@ READ_ONLY_TOOLS = frozenset(
         "get_actionable_items",
         "get_database_info",
         "list_sync_sources",
+        "list_pending_entities",
+        "list_pending_merges",
+        "get_topic_clusters",
+        "get_entity_relationships",
     }
 )
 
@@ -52,6 +56,15 @@ WRITE_TOOLS = frozenset(
         "add_todo",
         "trigger_sync",
         "trigger_rescan",
+        "enrich_document",
+        "approve_entity",
+        "reject_entity",
+        "analyze_knowledge_base",
+        "find_entity_duplicates",
+        "merge_entities",
+        "approve_merge",
+        "reject_merge",
+        "run_consolidation",
     }
 )
 
@@ -401,6 +414,126 @@ class HTTPMCPServer:
                 token_info = getattr(self.server, "_current_token_info", None)
                 db_name = token_info.database if token_info else config.get_database().name
                 result = _list_sync_sources(kb.db_url, db_name)
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "enrich_document":
+                from .mcp_server import _enrich_document
+
+                result = _enrich_document(
+                    kb.db_url,
+                    source_path=arguments["source_path"],
+                    extract_todos=arguments.get("extract_todos", True),
+                    extract_entities=arguments.get("extract_entities", True),
+                    auto_create_entities=arguments.get("auto_create_entities", False),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "list_pending_entities":
+                from .mcp_server import _list_pending_entities
+
+                result = _list_pending_entities(
+                    kb.db_url,
+                    entity_type=arguments.get("entity_type"),
+                    limit=arguments.get("limit", 20),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "approve_entity":
+                from .mcp_server import _approve_entity
+
+                result = _approve_entity(kb.db_url, arguments["pending_id"])
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "reject_entity":
+                from .mcp_server import _reject_entity
+
+                result = _reject_entity(kb.db_url, arguments["pending_id"])
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "analyze_knowledge_base":
+                from .mcp_server import _analyze_knowledge_base
+
+                result = _analyze_knowledge_base(
+                    kb.db_url,
+                    project=arguments.get("project"),
+                    sample_size=arguments.get("sample_size", 15),
+                    auto_update=arguments.get("auto_update", True),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            # Entity consolidation tools
+            elif name == "find_entity_duplicates":
+                from .mcp_server import _find_entity_duplicates
+
+                result = _find_entity_duplicates(
+                    kb.db_url,
+                    similarity_threshold=arguments.get("similarity_threshold", 0.85),
+                    limit=arguments.get("limit", 50),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "merge_entities":
+                from .mcp_server import _merge_entities
+
+                result = _merge_entities(
+                    kb.db_url,
+                    canonical_path=arguments["canonical_path"],
+                    duplicate_path=arguments["duplicate_path"],
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "list_pending_merges":
+                from .mcp_server import _list_pending_merges
+
+                result = _list_pending_merges(
+                    kb.db_url,
+                    limit=arguments.get("limit", 50),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "approve_merge":
+                from .mcp_server import _approve_merge
+
+                result = _approve_merge(kb.db_url, arguments["merge_id"])
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "reject_merge":
+                from .mcp_server import _reject_merge
+
+                result = _reject_merge(kb.db_url, arguments["merge_id"])
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "get_topic_clusters":
+                from .mcp_server import _get_topic_clusters
+
+                result = _get_topic_clusters(
+                    kb.db_url,
+                    limit=arguments.get("limit", 20),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "get_entity_relationships":
+                from .mcp_server import _get_entity_relationships
+
+                result = _get_entity_relationships(
+                    kb.db_url,
+                    entity_name=arguments.get("entity_name"),
+                    relationship_type=arguments.get("relationship_type"),
+                    limit=arguments.get("limit", 50),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "run_consolidation":
+                from .mcp_server import _run_consolidation
+
+                result = _run_consolidation(
+                    kb.db_url,
+                    detect_duplicates=arguments.get("detect_duplicates", True),
+                    detect_cross_doc=arguments.get("detect_cross_doc", True),
+                    build_clusters=arguments.get("build_clusters", True),
+                    extract_relationships=arguments.get("extract_relationships", True),
+                    dry_run=arguments.get("dry_run", False),
+                )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
             else:

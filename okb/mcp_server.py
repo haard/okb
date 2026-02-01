@@ -884,6 +884,343 @@ def _list_sync_sources(db_url: str, db_name: str) -> str:
     return "\n".join(lines)
 
 
+def _enrich_document(
+    db_url: str,
+    source_path: str,
+    extract_todos: bool = True,
+    extract_entities: bool = True,
+    auto_create_entities: bool = False,
+) -> str:
+    """Run enrichment on a specific document."""
+    from psycopg.rows import dict_row
+
+    from .llm import get_llm
+    from .llm.enrich import EnrichmentConfig, process_enrichment
+
+    # Check LLM is configured
+    if get_llm() is None:
+        return (
+            "Error: No LLM provider configured. "
+            "Enrichment requires an LLM. Set ANTHROPIC_API_KEY or configure llm.provider in config."
+        )
+
+    with psycopg.connect(db_url, row_factory=dict_row) as conn:
+        doc = conn.execute(
+            "SELECT id, source_path, title, content, source_type, metadata FROM documents WHERE source_path = %s",
+            (source_path,),
+        ).fetchone()
+
+        if not doc:
+            return f"Document not found: {source_path}"
+
+        enrich_config = EnrichmentConfig(
+            extract_todos=extract_todos,
+            extract_entities=extract_entities,
+            auto_create_todos=True,
+            auto_create_entities=auto_create_entities,
+        )
+
+        project = doc["metadata"].get("project") if doc["metadata"] else None
+
+        stats = process_enrichment(
+            document_id=str(doc["id"]),
+            source_path=doc["source_path"],
+            title=doc["title"],
+            content=doc["content"],
+            source_type=doc["source_type"],
+            db_url=db_url,
+            config=enrich_config,
+            project=project,
+        )
+
+    lines = [f"Enriched: {source_path}"]
+    if stats["todos_created"]:
+        lines.append(f"  TODOs created: {stats['todos_created']}")
+    if stats["entities_pending"]:
+        lines.append(f"  Entities pending review: {stats['entities_pending']}")
+    if stats["entities_created"]:
+        lines.append(f"  Entities created: {stats['entities_created']}")
+    if not any(stats.values()):
+        lines.append("  No TODOs or entities extracted")
+
+    return "\n".join(lines)
+
+
+def _list_pending_entities(
+    db_url: str,
+    entity_type: str | None = None,
+    limit: int = 20,
+) -> str:
+    """List pending entity suggestions."""
+    from .llm.enrich import list_pending_entities
+
+    entities = list_pending_entities(db_url, entity_type=entity_type, limit=limit)
+
+    if not entities:
+        return "No pending entity suggestions."
+
+    lines = ["## Pending Entities\n"]
+    for e in entities:
+        confidence = e.get("confidence", 0)
+        confidence_str = f" ({confidence:.0%})" if confidence else ""
+        lines.append(f"- **{e['entity_name']}** ({e['entity_type']}){confidence_str}")
+        lines.append(f"  ID: `{e['id']}`")
+        if e.get("description"):
+            lines.append(f"  {e['description']}")
+        if e.get("aliases"):
+            lines.append(f"  Aliases: {', '.join(e['aliases'])}")
+        lines.append(f"  Source: {e['source_title']}")
+        lines.append("")
+
+    lines.append(f"\nUse `approve_entity` or `reject_entity` with the entity ID.")
+    return "\n".join(lines)
+
+
+def _approve_entity(db_url: str, pending_id: str) -> str:
+    """Approve a pending entity."""
+    from .llm.enrich import approve_entity
+
+    source_path = approve_entity(db_url, pending_id)
+    if source_path:
+        return f"Entity approved and created: `{source_path}`"
+    return "Failed to approve entity. ID may be invalid or already processed."
+
+
+def _reject_entity(db_url: str, pending_id: str) -> str:
+    """Reject a pending entity."""
+    from .llm.enrich import reject_entity
+
+    if reject_entity(db_url, pending_id):
+        return "Entity rejected."
+    return "Failed to reject entity. ID may be invalid or already processed."
+
+
+def _analyze_knowledge_base(
+    db_url: str,
+    project: str | None = None,
+    sample_size: int = 15,
+    auto_update: bool = True,
+) -> str:
+    """Analyze the knowledge base and return formatted result."""
+    from .llm import get_llm
+    from .llm.analyze import analyze_database, format_analysis_result
+
+    # Check LLM is configured
+    if get_llm() is None:
+        return (
+            "Error: No LLM provider configured. "
+            "Analysis requires an LLM. Set ANTHROPIC_API_KEY or configure llm.provider in config."
+        )
+
+    try:
+        result = analyze_database(
+            db_url=db_url,
+            project=project,
+            sample_size=sample_size,
+            auto_update=auto_update,
+        )
+        return format_analysis_result(result)
+    except Exception as e:
+        return f"Error analyzing knowledge base: {e}"
+
+
+def _find_entity_duplicates(
+    db_url: str,
+    similarity_threshold: float = 0.85,
+    entity_type: str | None = None,
+    use_llm: bool = True,
+) -> str:
+    """Find duplicate entities and return formatted result."""
+    from .llm.extractors.dedup import create_pending_merge, find_duplicate_entities
+
+    pairs = find_duplicate_entities(
+        db_url,
+        similarity_threshold=similarity_threshold,
+        use_llm=use_llm,
+        entity_type=entity_type,
+    )
+
+    if not pairs:
+        return "No potential duplicate entities found."
+
+    lines = ["## Potential Duplicate Entities\n"]
+    for p in pairs:
+        lines.append(f"- **{p.canonical_name}** ↔ **{p.duplicate_name}**")
+        lines.append(f"  Confidence: {p.confidence:.0%} ({p.reason})")
+        lines.append(f"  Types: {p.canonical_type} / {p.duplicate_type}")
+
+        # Create pending merge
+        merge_id = create_pending_merge(db_url, p)
+        if merge_id:
+            lines.append(f"  Pending merge ID: `{merge_id}`")
+        lines.append("")
+
+    lines.append(f"\nFound {len(pairs)} potential duplicates.")
+    lines.append("Use `approve_merge` or `reject_merge` with merge IDs to process.")
+    return "\n".join(lines)
+
+
+def _merge_entities(db_url: str, canonical_path: str, duplicate_path: str) -> str:
+    """Merge two entities and return result."""
+    from psycopg.rows import dict_row
+
+    from .llm.extractors.dedup import execute_merge
+
+    with psycopg.connect(db_url, row_factory=dict_row) as conn:
+        # Get entity IDs from paths
+        canonical = conn.execute(
+            "SELECT id, title FROM documents WHERE source_path = %s AND source_type = 'entity'",
+            (canonical_path,),
+        ).fetchone()
+        duplicate = conn.execute(
+            "SELECT id, title FROM documents WHERE source_path = %s AND source_type = 'entity'",
+            (duplicate_path,),
+        ).fetchone()
+
+        if not canonical:
+            return f"Error: Canonical entity not found: {canonical_path}"
+        if not duplicate:
+            return f"Error: Duplicate entity not found: {duplicate_path}"
+
+        if execute_merge(db_url, str(canonical["id"]), str(duplicate["id"])):
+            return (
+                f"Merge successful:\n"
+                f"- Kept: {canonical['title']} ({canonical_path})\n"
+                f"- Merged: {duplicate['title']} (deleted, added as alias)"
+            )
+        return "Error: Merge failed."
+
+
+def _list_pending_merges(db_url: str, limit: int = 50) -> str:
+    """List pending entity merges."""
+    from .llm.extractors.dedup import list_pending_merges
+
+    merges = list_pending_merges(db_url, limit=limit)
+
+    if not merges:
+        return "No pending entity merges."
+
+    lines = ["## Pending Entity Merges\n"]
+    for m in merges:
+        lines.append(f"- **{m['canonical_name']}** ← {m['duplicate_name']}")
+        lines.append(f"  ID: `{m['id']}`")
+        lines.append(f"  Confidence: {m['confidence']:.0%} ({m['reason']})")
+        lines.append("")
+
+    lines.append(f"\n{len(merges)} pending merges.")
+    lines.append("Use `approve_merge` or `reject_merge` with IDs to process.")
+    return "\n".join(lines)
+
+
+def _approve_merge(db_url: str, merge_id: str) -> str:
+    """Approve and execute a pending merge."""
+    from .llm.extractors.dedup import approve_merge
+
+    if approve_merge(db_url, merge_id):
+        return "Merge approved and executed."
+    return "Error: Failed to approve merge. ID may be invalid or already processed."
+
+
+def _reject_merge(db_url: str, merge_id: str) -> str:
+    """Reject a pending merge."""
+    from .llm.extractors.dedup import reject_merge
+
+    if reject_merge(db_url, merge_id):
+        return "Merge rejected."
+    return "Error: Failed to reject merge. ID may be invalid or already processed."
+
+
+def _get_topic_clusters(db_url: str, limit: int = 20) -> str:
+    """Get topic clusters."""
+    from .llm.consolidate import get_topic_clusters
+
+    clusters = get_topic_clusters(db_url, limit=limit)
+
+    if not clusters:
+        return "No topic clusters found. Run `run_consolidation` to create clusters."
+
+    lines = ["## Topic Clusters\n"]
+    for c in clusters:
+        lines.append(f"### {c['name']}")
+        if c.get("description"):
+            lines.append(c["description"])
+        lines.append(f"Members: {c['member_count']}")
+
+        # Show top members
+        entities = [m for m in c.get("members", []) if m.get("is_entity")]
+        if entities:
+            entity_names = [m["title"] for m in entities[:5]]
+            lines.append(f"Entities: {', '.join(entity_names)}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _get_entity_relationships(
+    db_url: str,
+    entity_name: str | None = None,
+    relationship_type: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Get entity relationships."""
+    from .llm.consolidate import get_entity_relationships
+
+    relationships = get_entity_relationships(
+        db_url, entity_name=entity_name, relationship_type=relationship_type, limit=limit
+    )
+
+    if not relationships:
+        if entity_name:
+            return f"No relationships found involving '{entity_name}'."
+        return "No entity relationships found. Run `run_consolidation` to extract relationships."
+
+    lines = ["## Entity Relationships\n"]
+    for r in relationships:
+        source = r["source"]["name"]
+        target = r["target"]["name"]
+        rel_type = r["type"]
+        confidence = r.get("confidence", 0)
+
+        lines.append(f"- **{source}** → *{rel_type}* → **{target}** ({confidence:.0%})")
+        if r.get("context"):
+            lines.append(f"  {r['context']}")
+
+    return "\n".join(lines)
+
+
+def _run_consolidation(
+    db_url: str,
+    detect_duplicates: bool = True,
+    detect_cross_doc: bool = True,
+    build_clusters: bool = True,
+    extract_relationships: bool = True,
+    dry_run: bool = False,
+) -> str:
+    """Run consolidation pipeline."""
+    from .llm import get_llm
+    from .llm.consolidate import format_consolidation_result, run_consolidation
+
+    # Check LLM is configured (needed for several phases)
+    if get_llm() is None and (detect_cross_doc or build_clusters or extract_relationships):
+        return (
+            "Error: No LLM provider configured. "
+            "Consolidation requires an LLM for cross-doc detection, clustering, and relationships. "
+            "Set ANTHROPIC_API_KEY or configure llm.provider in config."
+        )
+
+    result = run_consolidation(
+        db_url,
+        detect_duplicates=detect_duplicates,
+        detect_cross_doc=detect_cross_doc,
+        build_clusters=build_clusters,
+        extract_relationships=extract_relationships,
+        auto_merge_threshold=config.consolidation_auto_merge_threshold,
+        dry_run=dry_run,
+    )
+
+    return format_consolidation_result(result)
+
+
 def build_server_instructions(db_config) -> str | None:
     """Build server instructions from database config and LLM metadata."""
     parts = []
@@ -1306,6 +1643,304 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        Tool(
+            name="enrich_document",
+            description=(
+                "Run LLM enrichment on a document to extract TODOs and entities. "
+                "TODOs are created as separate documents, entities go to pending review. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Path of the document to enrich",
+                    },
+                    "extract_todos": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Whether to extract TODOs",
+                    },
+                    "extract_entities": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Whether to extract entities",
+                    },
+                    "auto_create_entities": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Auto-create entities instead of pending review",
+                    },
+                },
+                "required": ["source_path"],
+            },
+        ),
+        Tool(
+            name="list_pending_entities",
+            description=(
+                "List entity suggestions awaiting review. "
+                "Entities are extracted from documents but need approval before becoming searchable. "
+                "Use approve_entity or reject_entity to process them."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["person", "project", "technology", "concept", "organization"],
+                        "description": "Filter by entity type (optional)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum results",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="approve_entity",
+            description=(
+                "Approve a pending entity, creating it as a searchable document. "
+                "The entity will be linked to its source document(s). "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pending_id": {
+                        "type": "string",
+                        "description": "ID of the pending entity to approve",
+                    },
+                },
+                "required": ["pending_id"],
+            },
+        ),
+        Tool(
+            name="reject_entity",
+            description=(
+                "Reject a pending entity suggestion. "
+                "The entity will be marked as rejected and not shown again. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pending_id": {
+                        "type": "string",
+                        "description": "ID of the pending entity to reject",
+                    },
+                },
+                "required": ["pending_id"],
+            },
+        ),
+        Tool(
+            name="analyze_knowledge_base",
+            description=(
+                "Analyze the knowledge base to generate or update its description and topics. "
+                "Uses entity data and document samples to understand themes and content. "
+                "Results are stored in database_metadata for future sessions. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Analyze only a specific project (optional)",
+                    },
+                    "sample_size": {
+                        "type": "integer",
+                        "description": "Number of documents to sample (default: 15)",
+                        "default": 15,
+                    },
+                    "auto_update": {
+                        "type": "boolean",
+                        "description": "Update database metadata with results (default: true)",
+                        "default": True,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="find_entity_duplicates",
+            description=(
+                "Scan for potential duplicate entities using embedding similarity and LLM. "
+                "Returns pairs of entities that may refer to the same thing. "
+                "Use merge_entities or list_pending_merges to act on results."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "similarity_threshold": {
+                        "type": "number",
+                        "description": "Minimum similarity to consider duplicates (default: 0.85)",
+                        "default": 0.85,
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["person", "project", "technology", "concept", "organization"],
+                        "description": "Filter to specific entity type (optional)",
+                    },
+                    "use_llm": {
+                        "type": "boolean",
+                        "description": "Use LLM for batch duplicate detection (default: true)",
+                        "default": True,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="merge_entities",
+            description=(
+                "Merge two entities: redirect refs from duplicate to canonical, "
+                "add duplicate's name as alias, delete duplicate. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "canonical_path": {
+                        "type": "string",
+                        "description": "Source path of the entity to keep",
+                    },
+                    "duplicate_path": {
+                        "type": "string",
+                        "description": "Source path of the entity to merge into canonical",
+                    },
+                },
+                "required": ["canonical_path", "duplicate_path"],
+            },
+        ),
+        Tool(
+            name="list_pending_merges",
+            description=(
+                "List pending entity merge proposals awaiting approval. "
+                "Created by find_entity_duplicates or run_consolidation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default: 50)",
+                        "default": 50,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="approve_merge",
+            description=(
+                "Approve a pending entity merge. Executes the merge: "
+                "redirects refs, adds alias, deletes duplicate. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "merge_id": {
+                        "type": "string",
+                        "description": "ID of the pending merge to approve",
+                    },
+                },
+                "required": ["merge_id"],
+            },
+        ),
+        Tool(
+            name="reject_merge",
+            description=(
+                "Reject a pending entity merge proposal. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "merge_id": {
+                        "type": "string",
+                        "description": "ID of the pending merge to reject",
+                    },
+                },
+                "required": ["merge_id"],
+            },
+        ),
+        Tool(
+            name="get_topic_clusters",
+            description=(
+                "Get topic clusters - groups of related entities and documents. "
+                "Clusters are created by run_consolidation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum clusters to return (default: 20)",
+                        "default": 20,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="get_entity_relationships",
+            description=(
+                "Get relationships between entities (works_for, uses, belongs_to, related_to). "
+                "Relationships are extracted by run_consolidation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Filter to relationships involving this entity (optional)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default: 50)",
+                        "default": 50,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="run_consolidation",
+            description=(
+                "Run full entity consolidation pipeline: duplicate detection, "
+                "cross-document entity detection, topic clustering, relationship extraction. "
+                "Creates pending proposals for review. Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "detect_duplicates": {
+                        "type": "boolean",
+                        "description": "Run duplicate entity detection (default: true)",
+                        "default": True,
+                    },
+                    "detect_cross_doc": {
+                        "type": "boolean",
+                        "description": "Run cross-document entity detection (default: true)",
+                        "default": True,
+                    },
+                    "build_clusters": {
+                        "type": "boolean",
+                        "description": "Build topic clusters (default: true)",
+                        "default": True,
+                    },
+                    "extract_relationships": {
+                        "type": "boolean",
+                        "description": "Extract entity relationships (default: true)",
+                        "default": True,
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Report what would happen without making changes",
+                        "default": False,
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -1660,6 +2295,100 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
         elif name == "list_sync_sources":
             db_name = config.get_database().name
             result = _list_sync_sources(kb.db_url, db_name)
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "enrich_document":
+            result = _enrich_document(
+                kb.db_url,
+                source_path=arguments["source_path"],
+                extract_todos=arguments.get("extract_todos", True),
+                extract_entities=arguments.get("extract_entities", True),
+                auto_create_entities=arguments.get("auto_create_entities", False),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "list_pending_entities":
+            result = _list_pending_entities(
+                kb.db_url,
+                entity_type=arguments.get("entity_type"),
+                limit=arguments.get("limit", 20),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "approve_entity":
+            result = _approve_entity(kb.db_url, arguments["pending_id"])
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "reject_entity":
+            result = _reject_entity(kb.db_url, arguments["pending_id"])
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "analyze_knowledge_base":
+            result = _analyze_knowledge_base(
+                kb.db_url,
+                project=arguments.get("project"),
+                sample_size=arguments.get("sample_size", 15),
+                auto_update=arguments.get("auto_update", True),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "find_entity_duplicates":
+            result = _find_entity_duplicates(
+                kb.db_url,
+                similarity_threshold=arguments.get("similarity_threshold", 0.85),
+                entity_type=arguments.get("entity_type"),
+                use_llm=arguments.get("use_llm", True),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "merge_entities":
+            result = _merge_entities(
+                kb.db_url,
+                canonical_path=arguments["canonical_path"],
+                duplicate_path=arguments["duplicate_path"],
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "list_pending_merges":
+            result = _list_pending_merges(
+                kb.db_url,
+                limit=arguments.get("limit", 50),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "approve_merge":
+            result = _approve_merge(kb.db_url, arguments["merge_id"])
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "reject_merge":
+            result = _reject_merge(kb.db_url, arguments["merge_id"])
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "get_topic_clusters":
+            result = _get_topic_clusters(
+                kb.db_url,
+                limit=arguments.get("limit", 20),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "get_entity_relationships":
+            result = _get_entity_relationships(
+                kb.db_url,
+                entity_name=arguments.get("entity_name"),
+                relationship_type=arguments.get("relationship_type"),
+                limit=arguments.get("limit", 50),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "run_consolidation":
+            result = _run_consolidation(
+                kb.db_url,
+                detect_duplicates=arguments.get("detect_duplicates", True),
+                detect_cross_doc=arguments.get("detect_cross_doc", True),
+                build_clusters=arguments.get("build_clusters", True),
+                extract_relationships=arguments.get("extract_relationships", True),
+                dry_run=arguments.get("dry_run", False),
+            )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         else:

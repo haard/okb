@@ -165,13 +165,13 @@ class ClaudeProvider:
 
 
 class ModalProvider:
-    """Modal-based LLM provider using open models (Llama, Mistral, etc.).
+    """Modal-based LLM provider using open models (Phi-3, Llama, Mistral, etc.).
 
     Runs on Modal GPU infrastructure - no API key needed, pay per compute.
-    Requires deploying the Modal app first: `modal deploy lkb/modal_llm.py`
+    Requires deploying the Modal app first: `okb llm deploy`
 
     Config:
-        model: Model name (default: meta-llama/Llama-3.2-3B-Instruct)
+        model: Model name (default: microsoft/Phi-3-mini-4k-instruct)
         timeout: Request timeout in seconds (default: 60)
     """
 
@@ -179,7 +179,7 @@ class ModalProvider:
 
     def __init__(self) -> None:
         self._llm = None
-        self._model: str = "meta-llama/Llama-3.2-3B-Instruct"
+        self._model: str = "microsoft/Phi-3-mini-4k-instruct"
         self._timeout: int = 60
 
     def configure(self, config: dict) -> None:
@@ -244,9 +244,12 @@ class ModalProvider:
     def list_models(self) -> list[str]:
         """List recommended models for Modal."""
         return [
+            # Non-gated (work immediately)
+            "microsoft/Phi-3-mini-4k-instruct",
+            "Qwen/Qwen2-1.5B-Instruct",
+            # Gated (require HuggingFace approval + HF_TOKEN)
             "meta-llama/Llama-3.2-3B-Instruct",
             "meta-llama/Llama-3.2-1B-Instruct",
-            "mistralai/Mistral-7B-Instruct-v0.3",
         ]
 
 
