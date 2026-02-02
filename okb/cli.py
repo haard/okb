@@ -1210,7 +1210,7 @@ def token_list(ctx, database: str | None):
         for t in tokens:
             desc = f" - {t.description}" if t.description else ""
             last_used = t.last_used_at.strftime("%Y-%m-%d %H:%M") if t.last_used_at else "never"
-            click.echo(f"  [{t.permissions}] {t.token_hash[:12]}...{desc}")
+            click.echo(f"  ID {t.id} [{t.permissions}] {t.token_hash[:12]}...{desc}")
             created = t.created_at.strftime("%Y-%m-%d %H:%M")
             click.echo(f"      Created: {created}, Last used: {last_used}")
     except Exception as e:
@@ -1219,26 +1219,43 @@ def token_list(ctx, database: str | None):
 
 
 @token.command("revoke")
-@click.argument("token_value")
+@click.argument("token_value", required=False)
+@click.option("--id", "token_id", type=int, default=None, help="Token ID to revoke (from 'okb token list')")
 @click.option("--db", "database", default=None, help="Database to revoke token from")
 @click.pass_context
-def token_revoke(ctx, token_value: str, database: str | None):
+def token_revoke(ctx, token_value: str | None, token_id: int | None, database: str | None):
     """Revoke (delete) an API token.
 
-    TOKEN_VALUE must be the full token string.
+    Either provide the full TOKEN_VALUE or use --id with the token ID from 'okb token list'.
     """
-    from .tokens import delete_token
+    from .tokens import delete_token, delete_token_by_id
+
+    if not token_value and not token_id:
+        click.echo("Error: Provide either TOKEN_VALUE or --id", err=True)
+        sys.exit(1)
+
+    if token_value and token_id:
+        click.echo("Error: Provide either TOKEN_VALUE or --id, not both", err=True)
+        sys.exit(1)
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
 
     try:
-        deleted = delete_token(db_cfg.url, token_value)
-        if deleted:
-            click.echo("Token revoked.")
+        if token_id:
+            deleted = delete_token_by_id(db_cfg.url, token_id)
+            if deleted:
+                click.echo(f"Token ID {token_id} revoked.")
+            else:
+                click.echo(f"Token ID {token_id} not found.", err=True)
+                sys.exit(1)
         else:
-            click.echo("Token not found. Make sure you're using the full token string.", err=True)
-            sys.exit(1)
+            deleted = delete_token(db_cfg.url, token_value)
+            if deleted:
+                click.echo("Token revoked.")
+            else:
+                click.echo("Token not found. Use --id or provide the full token string.", err=True)
+                sys.exit(1)
     except Exception as e:
         click.echo(f"Error revoking token: {e}", err=True)
         sys.exit(1)

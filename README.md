@@ -50,7 +50,7 @@ okb ingest ~/notes ~/docs
 | `okb modal deploy` | Deploy GPU embedder to Modal |
 | `okb token create` | Create API token for HTTP server |
 | `okb token list` | List tokens for a database |
-| `okb token revoke` | Revoke an API token |
+| `okb token revoke [TOKEN] --id <n>` | Revoke token by full value or ID |
 | `okb sync list` | List available API sources (plugins) |
 | `okb sync list-projects <source>` | List projects from source (for config) |
 | `okb sync run <sources>` | Sync data from external APIs |

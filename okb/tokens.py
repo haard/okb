@@ -22,6 +22,7 @@ from psycopg.rows import dict_row
 class TokenInfo:
     """Information about a token."""
 
+    id: int
     token_hash: str
     database: str
     permissions: str  # 'ro' or 'rw'
@@ -143,7 +144,7 @@ def list_tokens(db_url: str) -> list[TokenInfo]:
         with psycopg.connect(db_url, row_factory=dict_row) as conn:
             results = conn.execute(
                 """
-                SELECT token_hash, permissions, description, created_at, last_used_at
+                SELECT id, token_hash, permissions, description, created_at, last_used_at
                 FROM tokens
                 ORDER BY created_at DESC
                 """
@@ -151,6 +152,7 @@ def list_tokens(db_url: str) -> list[TokenInfo]:
 
             return [
                 TokenInfo(
+                    id=r["id"],
                     token_hash=r["token_hash"],
                     database=db_name,
                     permissions=r["permissions"],
@@ -199,6 +201,25 @@ def delete_token(db_url: str, token_or_prefix: str) -> bool:
         return False
 
 
+def delete_token_by_id(db_url: str, token_id: int) -> bool:
+    """Delete a token by its ID.
+
+    Args:
+        db_url: Database connection URL
+        token_id: Token ID from the tokens table
+
+    Returns:
+        True if token was deleted, False if not found
+    """
+    with psycopg.connect(db_url) as conn:
+        result = conn.execute(
+            "DELETE FROM tokens WHERE id = %s RETURNING id",
+            (token_id,),
+        ).fetchone()
+        conn.commit()
+        return result is not None
+
+
 def verify_token(token: str, get_db_url_fn) -> TokenInfo | None:
     """Verify a token and return its info if valid.
 
@@ -225,7 +246,7 @@ def verify_token(token: str, get_db_url_fn) -> TokenInfo | None:
         with psycopg.connect(db_url, row_factory=dict_row) as conn:
             result = conn.execute(
                 """
-                SELECT token_hash, permissions, description, created_at, last_used_at
+                SELECT id, token_hash, permissions, description, created_at, last_used_at
                 FROM tokens
                 WHERE token_hash = %s
                 """,
@@ -243,6 +264,7 @@ def verify_token(token: str, get_db_url_fn) -> TokenInfo | None:
             conn.commit()
 
             return TokenInfo(
+                id=result["id"],
                 token_hash=result["token_hash"],
                 database=database,
                 permissions=result["permissions"],
