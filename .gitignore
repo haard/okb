@@ -46,3 +46,4 @@ pgvector_data/
 # Model cache (large)
 .cache/
 sentence-transformers/
+plan.org

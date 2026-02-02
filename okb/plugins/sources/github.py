@@ -95,11 +95,11 @@ class GitHubSource:
               token: ${GITHUB_TOKEN}
 
     Usage:
-        lkb sync run github --repo owner/repo              # README + docs/ (default)
-        lkb sync run github --repo owner/repo --source     # All source files
-        lkb sync run github --repo owner/repo --issues     # Include issues
-        lkb sync run github --repo owner/repo --prs        # Include PRs
-        lkb sync run github --repo owner/repo --wiki       # Include wiki
+        okb sync run github --repo owner/repo              # README + docs/ (default)
+        okb sync run github --repo owner/repo --source     # All source files
+        okb sync run github --repo owner/repo --issues     # Include issues
+        okb sync run github --repo owner/repo --prs        # Include PRs
+        okb sync run github --repo owner/repo --wiki       # Include wiki
     """
 
     name = "github"

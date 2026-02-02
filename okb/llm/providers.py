@@ -202,7 +202,7 @@ class ModalProvider:
             self._llm = modal.Cls.from_name("knowledge-llm", "LLM")()
         except modal.exception.NotFoundError:
             raise RuntimeError(
-                "Modal LLM app not deployed. Deploy with: modal deploy lkb/modal_llm.py"
+                "Modal LLM app not deployed. Deploy with: okb llm deploy"
             )
 
     def complete(

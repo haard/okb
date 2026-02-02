@@ -53,7 +53,7 @@ class DatabaseConfig:
 
     name: str
     url: str
-    managed: bool = True  # Whether lkb manages this (Docker) or external
+    managed: bool = True  # Whether okb manages this (Docker) or external
     default: bool = False
     description: str | None = None  # Human-readable description for LLM context
     topics: list[str] | None = None  # Topic keywords to help LLM route queries
@@ -259,6 +259,7 @@ DEFAULTS = {
             "yarn.lock",
             "uv.lock",
             "Cargo.lock",
+            "poetry.lock",
             "*.pyc",
             "*.pyo",
             "*.tmp",
@@ -404,7 +405,7 @@ class Config:
         """Load configuration from file and environment."""
         file_config = load_config_file()
 
-        # Load and merge local config overlay (.lkbconf.yaml)
+        # Load and merge local config overlay (.okbconf.yaml)
         local_path = find_local_config()
         local_default_db: str | None = None
         if local_path:

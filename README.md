@@ -36,6 +36,8 @@ okb ingest ~/notes ~/docs
 | `okb db start` | Start pgvector database container |
 | `okb db stop` | Stop database container |
 | `okb db status` | Show database status |
+| `okb db migrate [name]` | Apply pending migrations (optionally for specific db) |
+| `okb db list` | List configured databases |
 | `okb db destroy` | Remove container and volume (destructive) |
 | `okb ingest <paths>` | Ingest documents into knowledge base |
 | `okb ingest <paths> --local` | Ingest using local GPU/CPU embedding (no Modal) |
@@ -44,6 +46,7 @@ okb ingest ~/notes ~/docs
 | `okb watch <paths>` | Watch directories for changes |
 | `okb config init` | Create default config file |
 | `okb config show` | Show current configuration |
+| `okb config path` | Print config file path |
 | `okb modal deploy` | Deploy GPU embedder to Modal |
 | `okb token create` | Create API token for HTTP server |
 | `okb token list` | List tokens for a database |
@@ -64,6 +67,13 @@ okb ingest ~/notes ~/docs
 | `okb enrich pending` | List entities awaiting review |
 | `okb enrich approve <id>` | Approve a pending entity |
 | `okb enrich reject <id>` | Reject a pending entity |
+| `okb enrich analyze` | Analyze database and update description/topics |
+| `okb enrich consolidate` | Run entity consolidation (duplicates, clusters) |
+| `okb enrich merge-proposals` | List pending merge proposals |
+| `okb enrich approve-merge <id>` | Approve an entity merge |
+| `okb enrich reject-merge <id>` | Reject an entity merge |
+| `okb enrich clusters` | List topic clusters |
+| `okb enrich relationships` | List entity relationships |
 
 
 ## Configuration
@@ -274,6 +284,15 @@ Then configure Claude Code to connect via SSE:
 | `list_pending_entities` | List entities awaiting review |
 | `approve_entity` | Approve a pending entity |
 | `reject_entity` | Reject a pending entity |
+| `analyze_knowledge_base` | Analyze content and generate description/topics |
+| `find_entity_duplicates` | Find potential duplicate entities |
+| `merge_entities` | Merge duplicate entities |
+| `list_pending_merges` | List pending merge proposals |
+| `approve_merge` | Approve a merge proposal |
+| `reject_merge` | Reject a merge proposal |
+| `get_topic_clusters` | Get topic clusters from consolidation |
+| `get_entity_relationships` | Get relationships between entities |
+| `run_consolidation` | Run full entity consolidation pipeline |
 
 ## Contextual Chunking
 
@@ -296,6 +315,10 @@ project: student-app
 category: backend
 ---
 
+# Your Document Title
+
+Content here...
+```
 
 ## Plugin System
 

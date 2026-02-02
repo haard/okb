@@ -171,7 +171,7 @@ def delete_token(db_url: str, token_or_prefix: str) -> bool:
 
     Args:
         db_url: Database connection URL
-        token_or_prefix: Full token or token prefix (e.g., 'lkb_personal_ro')
+        token_or_prefix: Full token or token prefix (e.g., 'okb_personal_ro')
 
     Returns:
         True if token was deleted, False if not found

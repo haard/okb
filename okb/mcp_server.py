@@ -4,14 +4,14 @@ MCP Server for Knowledge Base.
 Exposes semantic search to Claude Code via the Model Context Protocol.
 
 Usage:
-    python mcp_server.py
+    okb serve
 
-Configure in Claude Code (~/.claude.json or similar):
+Configure in Claude Code (see https://docs.anthropic.com/en/docs/claude-code):
     {
       "mcpServers": {
         "knowledge-base": {
-          "command": "python",
-          "args": ["/path/to/mcp_server.py"]
+          "command": "okb",
+          "args": ["serve"]
         }
       }
     }

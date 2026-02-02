@@ -45,7 +45,7 @@ def _check_docker() -> bool:
 
 
 def _get_container_status() -> str | None:
-    """Get the status of the lkb container. Returns None if not found."""
+    """Get the status of the okb container. Returns None if not found."""
     try:
         result = subprocess.run(
             [
@@ -842,7 +842,7 @@ def sync_run(
 ):
     """Sync from API sources.
 
-    Example: lkb sync run github --repo owner/repo
+    Example: okb sync run github --repo owner/repo
     """
     import psycopg
     from psycopg.rows import dict_row
@@ -1277,7 +1277,7 @@ def llm_status(ctx, database: str | None):
         click.echo(f"Cache responses: {config.llm_cache_responses}")
 
         if config.llm_provider == "modal":
-            click.echo("Backend: Modal GPU (deploy with: lkb llm deploy)")
+            click.echo("Backend: Modal GPU (deploy with: okb llm deploy)")
         elif config.llm_use_bedrock:
             click.echo(f"Backend: AWS Bedrock (region: {config.llm_aws_region})")
         else:
