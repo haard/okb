@@ -108,7 +108,7 @@ chunking:
 Use `--db <name>` to target a specific database with any command.
 
 Environment variables override config file settings:
-- `KB_DATABASE_URL` - Database connection string
+- `OKB_DATABASE_URL` - Database connection string
 - `OKB_DOCKER_PORT` - Docker port mapping
 - `OKB_CONTAINER_NAME` - Docker container name
 

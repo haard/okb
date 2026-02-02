@@ -468,7 +468,7 @@ class Config:
         else:
             # Legacy: single database_url (env > file > default)
             legacy_url = os.environ.get(
-                "KB_DATABASE_URL",
+                "OKB_DATABASE_URL",
                 file_config.get("database_url", DEFAULTS["databases"]["default"]["url"]),
             )
             self.databases["default"] = DatabaseConfig(
