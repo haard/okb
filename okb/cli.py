@@ -1408,7 +1408,7 @@ def llm_deploy():
     # Get model and GPU from config
     model = config.llm_model or "microsoft/Phi-3-mini-4k-instruct"
     gpu = config.llm_modal_gpu or "L4"
-    click.echo(f"Deploying Modal LLM:")
+    click.echo("Deploying Modal LLM:")
     click.echo(f"  Model: {model}")
     click.echo(f"  GPU: {gpu}")
     click.echo("Note: First deploy downloads the model and may take a few minutes.")
@@ -1442,6 +1442,7 @@ def enrich():
 @click.option("--source-type", default=None, help="Filter by source type")
 @click.option("--project", default=None, help="Filter by project")
 @click.option("--query", default=None, help="Semantic search query to filter documents")
+@click.option("--path-pattern", default=None, help="SQL LIKE pattern for source_path")
 @click.option(
     "--all", "enrich_all", is_flag=True, help="Re-enrich all documents (ignore enriched_at)"
 )
@@ -1455,6 +1456,7 @@ def enrich_run(
     source_type: str | None,
     project: str | None,
     query: str | None,
+    path_pattern: str | None,
     enrich_all: bool,
     dry_run: bool,
     limit: int,
@@ -1476,6 +1478,8 @@ def enrich_run(
         okb enrich run --source-type markdown  # Only markdown files
 
         okb enrich run --query "meeting notes"  # Filter by semantic search
+
+        okb enrich run --path-pattern '%myrepo%'  # Filter by source path
 
         okb enrich run --workers 8      # Use 8 parallel workers
     """
@@ -1513,6 +1517,7 @@ def enrich_run(
         source_type=source_type,
         project=project,
         query=query,
+        path_pattern=path_pattern,
         enrichment_version=enrichment_version,
         limit=limit,
     )
@@ -1660,15 +1665,16 @@ def enrich_pending(ctx, database: str | None, entity_type: str | None, limit: in
 @enrich.command("approve")
 @click.argument("pending_id")
 @click.option("--db", "database", default=None, help="Database")
+@click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
 @click.pass_context
-def enrich_approve(ctx, pending_id: str, database: str | None):
+def enrich_approve(ctx, pending_id: str, database: str | None, local: bool):
     """Approve a pending entity, creating it as a searchable document."""
     from .llm.enrich import approve_entity
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
 
-    source_path = approve_entity(db_cfg.url, pending_id)
+    source_path = approve_entity(db_cfg.url, pending_id, use_modal=not local)
     if source_path:
         click.echo(f"Entity approved and created: {source_path}")
     else:
@@ -2059,6 +2065,400 @@ def enrich_relationships(
             evidence = r["evidence"][:60] + "..." if len(r["evidence"]) > 60 else r["evidence"]
             click.echo(f"    Evidence: {evidence}")
     click.echo("")
+
+
+@enrich.command("all")
+@click.option("--db", "database", default=None, help="Database to enrich")
+@click.option("--source-type", default=None, help="Filter by source type")
+@click.option("--project", default=None, help="Filter by project")
+@click.option("--query", default=None, help="Semantic search query to filter documents")
+@click.option("--path-pattern", default=None, help="SQL LIKE pattern for source_path")
+@click.option("--limit", default=100, help="Maximum documents to process")
+@click.option("--workers", default=None, type=int, help="Parallel workers (default: docs/5, min 1)")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without executing")
+@click.option("--skip-consolidate", is_flag=True, help="Skip consolidation phase")
+@click.option("--duplicates/--no-duplicates", "detect_duplicates", default=True,
+              help="Detect duplicate entities during consolidation")
+@click.option("--clusters/--no-clusters", "build_clusters", default=True,
+              help="Build topic clusters during consolidation")
+@click.option("--relationships/--no-relationships", "extract_relationships", default=True,
+              help="Extract entity relationships during consolidation")
+@click.pass_context
+def enrich_all(
+    ctx,
+    database: str | None,
+    source_type: str | None,
+    project: str | None,
+    query: str | None,
+    path_pattern: str | None,
+    limit: int,
+    workers: int | None,
+    dry_run: bool,
+    skip_consolidate: bool,
+    detect_duplicates: bool,
+    build_clusters: bool,
+    extract_relationships: bool,
+):
+    """Run full enrichment pipeline: extraction + consolidation.
+
+    Combines 'enrich run' and 'enrich consolidate' in one command for
+    one-shot enrichment of documents.
+
+    Examples:
+
+        okb enrich all                          # Run full pipeline
+
+        okb enrich all --dry-run                # Preview what would happen
+
+        okb enrich all --skip-consolidate       # Run extraction only
+
+        okb enrich all --source-type markdown   # Filter to markdown files
+
+        okb enrich all --no-clusters            # Skip cluster building
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from .llm import get_llm
+    from .llm.consolidate import format_consolidation_result, run_consolidation
+    from .llm.enrich import EnrichmentConfig, get_unenriched_documents, process_enrichment
+
+    # Check LLM is configured
+    if get_llm() is None:
+        click.echo("Error: No LLM provider configured.", err=True)
+        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml", err=True)
+        ctx.exit(1)
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    # Phase 1: Enrichment
+    click.echo("=== Phase 1: Enrichment ===")
+    click.echo(f"Scanning database '{db_cfg.name}' for documents to enrich...")
+    if dry_run:
+        click.echo("(dry run - no changes will be made)")
+
+    docs = get_unenriched_documents(
+        db_url=db_cfg.url,
+        source_type=source_type,
+        project=project,
+        query=query,
+        path_pattern=path_pattern,
+        limit=limit,
+    )
+
+    total_todos = 0
+    total_entities_pending = 0
+    total_entities_created = 0
+
+    if not docs:
+        click.echo("No documents need enrichment.")
+    else:
+        click.echo(f"Found {len(docs)} documents to enrich")
+
+        if dry_run:
+            for doc in docs[:20]:
+                click.echo(f"  - {doc['title']} ({doc['source_type']})")
+            if len(docs) > 20:
+                click.echo(f"  ... and {len(docs) - 20} more")
+        else:
+            # Build config
+            enrich_config = EnrichmentConfig.from_config(
+                {
+                    "enabled": config.enrichment_enabled,
+                    "version": config.enrichment_version,
+                    "extract_todos": config.enrichment_extract_todos,
+                    "extract_entities": config.enrichment_extract_entities,
+                    "auto_create_todos": config.enrichment_auto_create_todos,
+                    "auto_create_entities": config.enrichment_auto_create_entities,
+                    "min_confidence_todo": config.enrichment_min_confidence_todo,
+                    "min_confidence_entity": config.enrichment_min_confidence_entity,
+                }
+            )
+
+            # Calculate workers
+            if workers is None:
+                workers = max(1, len(docs) // 5)
+
+            completed = 0
+            errors = 0
+
+            def enrich_one(doc: dict) -> tuple[dict, dict | None, str | None]:
+                proj = doc["metadata"].get("project") if doc["metadata"] else None
+                try:
+                    stats = process_enrichment(
+                        document_id=str(doc["id"]),
+                        source_path=doc["source_path"],
+                        title=doc["title"],
+                        content=doc["content"],
+                        source_type=doc["source_type"],
+                        db_url=db_cfg.url,
+                        config=enrich_config,
+                        project=proj,
+                    )
+                    return doc, stats, None
+                except Exception as e:
+                    return doc, None, str(e)
+
+            click.echo(f"Processing with {workers} parallel workers...")
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(enrich_one, doc): doc for doc in docs}
+
+                for future in as_completed(futures):
+                    doc, stats, error = future.result()
+                    completed += 1
+                    title = doc["title"][:40] if doc["title"] else "Untitled"
+
+                    if error:
+                        errors += 1
+                        click.echo(f"[{completed}/{len(docs)}] {title}... -> error: {error[:50]}")
+                        continue
+
+                    total_todos += stats["todos_created"]
+                    total_entities_pending += stats["entities_pending"]
+                    total_entities_created += stats["entities_created"]
+
+                    parts = []
+                    if stats["todos_created"]:
+                        parts.append(f"{stats['todos_created']} TODOs")
+                    if stats["entities_pending"]:
+                        parts.append(f"{stats['entities_pending']} pending")
+                    if stats["entities_created"]:
+                        parts.append(f"{stats['entities_created']} entities")
+                    if parts:
+                        click.echo(f"[{completed}/{len(docs)}] {title}... -> {', '.join(parts)}")
+                    else:
+                        click.echo(f"[{completed}/{len(docs)}] {title}... -> nothing extracted")
+
+            click.echo("")
+            click.echo("Enrichment summary:")
+            click.echo(f"  Documents processed: {len(docs)}")
+            if errors:
+                click.echo(f"  Errors: {errors}")
+            click.echo(f"  TODOs created: {total_todos}")
+            click.echo(f"  Entities pending review: {total_entities_pending}")
+            click.echo(f"  Entities auto-created: {total_entities_created}")
+
+    # Phase 2: Consolidation
+    if skip_consolidate:
+        click.echo("")
+        click.echo("Skipping consolidation (--skip-consolidate)")
+        return
+
+    click.echo("")
+    click.echo("=== Phase 2: Consolidation ===")
+
+    result = run_consolidation(
+        db_url=db_cfg.url,
+        detect_duplicates=detect_duplicates,
+        detect_cross_doc=True,
+        build_clusters=build_clusters,
+        extract_relationships=extract_relationships,
+        dry_run=dry_run,
+    )
+
+    output = format_consolidation_result(result)
+    click.echo(output)
+
+    if not dry_run and (result.duplicates_found > 0 or result.cross_doc_candidates > 0):
+        click.echo("")
+        click.echo("Use 'okb enrich review' to review pending entities and merges.")
+
+
+@enrich.command("review")
+@click.option("--db", "database", default=None, help="Database to review")
+@click.option("--entities-only", is_flag=True, help="Only review pending entities")
+@click.option("--merges-only", is_flag=True, help="Only review pending merges")
+@click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
+@click.option("--wait/--no-wait", default=True, help="Wait for embeddings to complete")
+@click.pass_context
+def enrich_review(
+    ctx, database: str | None, entities_only: bool, merges_only: bool, local: bool, wait: bool
+):
+    """Interactive review of pending entities and merge proposals.
+
+    Loops through pending items with approve/reject prompts.
+    Press Q to quit early - remaining items stay pending for later.
+
+    Entity approvals run asynchronously - you can continue reviewing while
+    embeddings are generated. Use --no-wait to exit immediately after reviewing.
+
+    Examples:
+
+        okb enrich review                    # Review all pending items
+
+        okb enrich review --entities-only    # Only review entities
+
+        okb enrich review --merges-only      # Only review merges
+
+        okb enrich review --local            # Use local CPU embedding
+
+        okb enrich review --no-wait          # Don't wait for embeddings
+    """
+
+    from .llm.enrich import (
+        approve_entity_async,
+        list_pending_entities,
+        reject_entity,
+        shutdown_executor,
+    )
+    from .llm.extractors.dedup import approve_merge, list_pending_merges, reject_merge
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+    use_modal = not local
+
+    # Get pending items
+    entities = [] if merges_only else list_pending_entities(db_cfg.url, limit=100)
+    merges = [] if entities_only else list_pending_merges(db_cfg.url, limit=100)
+
+    if not entities and not merges:
+        click.echo("No pending items to review.")
+        return
+
+    click.echo(f"Pending: {len(entities)} entities, {len(merges)} merges")
+    click.echo("")
+
+    # Counters
+    approved = 0
+    rejected = 0
+    skipped = 0
+
+    # Track async approval futures
+    pending_futures: list[tuple] = []  # (future, entity_name)
+
+    # Review entities
+    choice = None
+    if entities and not merges_only:
+        for i, e in enumerate(entities, 1):
+            # Check for completed futures
+            done_count = sum(1 for f, _ in pending_futures if f.done())
+            if pending_futures and done_count > 0:
+                total = len(pending_futures)
+                click.echo(click.style(f"  ({done_count}/{total} embeddings done)", dim=True))
+
+            click.echo(click.style(f"=== Entity Review [{i}/{len(entities)}] ===", bold=True))
+            click.echo(f"Name: {click.style(e['entity_name'], fg='cyan')}")
+            click.echo(f"Type: {e['entity_type']}")
+            confidence = e.get("confidence", 0)
+            if confidence:
+                click.echo(f"Confidence: {confidence:.0%}")
+            if e.get("description"):
+                d = e["description"]
+                desc = d[:80] + "..." if len(d) > 80 else d
+                click.echo(f"Description: {desc}")
+            if e.get("aliases"):
+                click.echo(f"Aliases: {', '.join(e['aliases'][:5])}")
+            click.echo(f"Source: {e['source_title']}")
+            click.echo("")
+
+            choice = click.prompt(
+                "[A]pprove  [R]eject  [S]kip  [Q]uit",
+                type=click.Choice(["A", "R", "S", "Q", "a", "r", "s", "q"]),
+                show_choices=False,
+            ).upper()
+
+            if choice == "Q":
+                click.echo("Quitting review...")
+                break
+            elif choice == "A":
+                # Submit async approval
+                future = approve_entity_async(db_cfg.url, str(e["id"]), use_modal)
+                pending_futures.append((future, e["entity_name"]))
+                click.echo(click.style("⏳ Queued for approval", fg="cyan"))
+                approved += 1
+            elif choice == "R":
+                if reject_entity(db_cfg.url, str(e["id"])):
+                    click.echo(click.style("✗ Rejected", fg="yellow"))
+                    rejected += 1
+                else:
+                    click.echo(click.style("✗ Failed to reject", fg="red"))
+            else:
+                click.echo("Skipped")
+                skipped += 1
+
+            click.echo("")
+        else:
+            # Completed all entities, continue to merges
+            pass
+
+    # Review merges (only if we didn't quit early)
+    if merges and not entities_only and (not entities or choice != "Q"):
+        for i, m in enumerate(merges, 1):
+            click.echo(click.style(f"=== Merge Review [{i}/{len(merges)}] ===", bold=True))
+            cname = click.style(m["canonical_name"], fg="cyan")
+            ctype = m.get("canonical_type", "unknown")
+            click.echo(f"Canonical: {cname} ({ctype})")
+            dname = click.style(m["duplicate_name"], fg="yellow")
+            dtype = m.get("duplicate_type", "unknown")
+            click.echo(f"Duplicate: {dname} ({dtype})")
+            confidence = m.get("confidence", 0)
+            if confidence:
+                click.echo(f"Confidence: {confidence:.0%}")
+            click.echo(f"Reason: {m.get('reason', 'similarity')}")
+            click.echo("")
+
+            choice = click.prompt(
+                "[A]pprove  [R]eject  [S]kip  [Q]uit",
+                type=click.Choice(["A", "R", "S", "Q", "a", "r", "s", "q"]),
+                show_choices=False,
+            ).upper()
+
+            if choice == "Q":
+                click.echo("Quitting review...")
+                break
+            elif choice == "A":
+                if approve_merge(db_cfg.url, str(m["id"])):
+                    click.echo(click.style("✓ Merged", fg="green"))
+                    approved += 1
+                else:
+                    click.echo(click.style("✗ Failed to merge", fg="red"))
+            elif choice == "R":
+                if reject_merge(db_cfg.url, str(m["id"])):
+                    click.echo(click.style("✗ Rejected", fg="yellow"))
+                    rejected += 1
+                else:
+                    click.echo(click.style("✗ Failed to reject", fg="red"))
+            else:
+                click.echo("Skipped")
+                skipped += 1
+
+            click.echo("")
+
+    # Wait for pending approvals if requested
+    if pending_futures:
+        if wait:
+            click.echo(f"Waiting for {len(pending_futures)} pending approvals...")
+            succeeded = 0
+            failed = 0
+            for future, name in pending_futures:
+                try:
+                    result = future.result(timeout=120)
+                    if result:
+                        click.echo(click.style(f"  ✓ {name}", fg="green"))
+                        succeeded += 1
+                    else:
+                        click.echo(click.style(f"  ✗ {name} failed", fg="red"))
+                        failed += 1
+                except Exception as e:
+                    click.echo(click.style(f"  ✗ {name}: {e}", fg="red"))
+                    failed += 1
+            click.echo(f"Embeddings: {succeeded} succeeded, {failed} failed")
+        else:
+            done_count = sum(1 for f, _ in pending_futures if f.done())
+            pending_count = len(pending_futures) - done_count
+            if pending_count > 0:
+                click.echo(f"{pending_count} embeddings still processing in background...")
+
+    # Cleanup executor
+    shutdown_executor(wait=wait)
+
+    # Summary
+    click.echo("")
+    click.echo(click.style("Review complete:", bold=True))
+    click.echo(f"  {click.style(str(approved), fg='green')} approved")
+    click.echo(f"  {click.style(str(rejected), fg='yellow')} rejected")
+    click.echo(f"  {skipped} skipped")
 
 
 if __name__ == "__main__":

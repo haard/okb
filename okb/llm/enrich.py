@@ -5,18 +5,80 @@ from __future__ import annotations
 import hashlib
 import sys
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
-from .extractors import EnrichmentResult, ExtractedEntity, ExtractedTodo, extract_entities, extract_todos
+from .extractors import (
+    EnrichmentResult,
+    ExtractedEntity,
+    ExtractedTodo,
+    extract_entities,
+    extract_todos,
+)
 from .extractors.entity import entity_source_path
 
-if TYPE_CHECKING:
-    from ..ingest import Document
+# Global thread pool for async embedding operations
+_executor: ThreadPoolExecutor | None = None
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Get or create the global thread pool for async operations."""
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="enrich-embed")
+    return _executor
+
+
+def shutdown_executor(wait: bool = True) -> None:
+    """Shutdown the global executor. Call at end of session."""
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=wait)
+        _executor = None
+
+
+def _get_embedder(use_modal: bool = False):
+    """Get embedder based on configuration.
+
+    Args:
+        use_modal: If True, try to use Modal GPU embedder; fall back to local on failure
+
+    Returns:
+        Embedder object with embed_document(text) method
+    """
+    if use_modal:
+        try:
+            import modal
+
+            modal_embedder = modal.Cls.from_name("knowledge-embedder", "Embedder")()
+
+            class ModalEmbedderWrapper:
+                """Wrapper to provide consistent interface."""
+
+                def __init__(self, embedder):
+                    self._embedder = embedder
+
+                def embed_document(self, text: str) -> list[float]:
+                    return self._embedder.embed_single.remote(text, is_query=False)
+
+            return ModalEmbedderWrapper(modal_embedder)
+        except Exception as e:
+            print(f"Modal unavailable ({e}), using local CPU embedding", file=sys.stderr)
+
+    # Fall back to local embedder
+    from ..local_embedder import embed_document
+
+    class LocalEmbedderWrapper:
+        """Wrapper to provide consistent interface."""
+
+        def embed_document(self, text: str) -> list[float]:
+            return embed_document(text)
+
+    return LocalEmbedderWrapper()
 
 
 @dataclass
@@ -44,11 +106,12 @@ class EnrichmentConfig:
     )
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "EnrichmentConfig":
+    def from_config(cls, cfg: dict) -> EnrichmentConfig:
         """Create from config dict."""
         auto_enrich = cfg.get("auto_enrich", {})
         auto_enrich_types = {k for k, v in auto_enrich.items() if v}
 
+        default_types = {"markdown", "org", "text"}
         return cls(
             enabled=cfg.get("enabled", True),
             version=cfg.get("version", 1),
@@ -58,7 +121,7 @@ class EnrichmentConfig:
             auto_create_entities=cfg.get("auto_create_entities", False),
             min_confidence_todo=cfg.get("min_confidence_todo", 0.7),
             min_confidence_entity=cfg.get("min_confidence_entity", 0.8),
-            auto_enrich_source_types=auto_enrich_types if auto_enrich_types else {"markdown", "org", "text"},
+            auto_enrich_source_types=auto_enrich_types if auto_enrich_types else default_types,
         )
 
 
@@ -109,12 +172,13 @@ def _create_todo_document(
     parent_title: str,
     db_url: str,
     project: str | None = None,
+    use_modal: bool = False,
 ) -> str | None:
     """Create a TODO document from an extracted TODO.
 
     Returns the source_path of the created document, or None if creation failed.
     """
-    from ..local_embedder import embed_document
+    embedder = _get_embedder(use_modal)
 
     # Generate unique source path
     todo_id = str(uuid.uuid4())[:8]
@@ -149,7 +213,7 @@ def _create_todo_document(
         embedding_parts.append(f"Details: {todo.content}")
     embedding_text = "\n".join(embedding_parts)
 
-    embedding = embed_document(embedding_text)
+    embedding = embedder.embed_document(embedding_text)
 
     with psycopg.connect(db_url, row_factory=dict_row) as conn:
         try:
@@ -244,12 +308,13 @@ def _create_entity_document(
     entity: ExtractedEntity,
     source_document_id: str,
     db_url: str,
+    use_modal: bool = False,
 ) -> str | None:
     """Create an entity document and add entity_refs.
 
     Returns the source_path of the created/existing entity document.
     """
-    from ..local_embedder import embed_document
+    embedder = _get_embedder(use_modal)
 
     source_path = entity_source_path(entity.entity_type, entity.name)
 
@@ -289,9 +354,20 @@ def _create_entity_document(
 
             if existing:
                 entity_doc_id = existing["id"]
+                # Update existing document
+                conn.execute(
+                    """
+                    UPDATE documents SET
+                        content = %s,
+                        metadata = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (content, psycopg.types.json.Json(metadata), entity_doc_id),
+                )
             else:
                 # Create new entity document
-                embedding = embed_document(embedding_text)
+                embedding = embedder.embed_document(embedding_text)
 
                 result = conn.execute(
                     """
@@ -299,10 +375,6 @@ def _create_entity_document(
                         source_path, source_type, title, content, metadata, content_hash
                     )
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (source_path) DO UPDATE SET
-                        content = EXCLUDED.content,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = NOW()
                     RETURNING id
                     """,
                     (
@@ -323,7 +395,6 @@ def _create_entity_document(
                     """
                     INSERT INTO chunks (document_id, chunk_index, content, embedding_text, embedding, token_count, metadata)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
                     """,
                     (
                         entity_doc_id,
@@ -363,6 +434,7 @@ def process_enrichment(
     db_url: str,
     config: EnrichmentConfig | None = None,
     project: str | None = None,
+    use_modal: bool = False,
 ) -> dict:
     """Run enrichment on a document and store results.
 
@@ -375,6 +447,7 @@ def process_enrichment(
         db_url: Database URL
         config: Enrichment configuration
         project: Project name for TODOs
+        use_modal: If True, use Modal GPU for embedding; else local CPU
 
     Returns:
         Dict with counts: {todos_created, entities_pending, entities_created}
@@ -393,13 +466,13 @@ def process_enrichment(
     # Process TODOs
     if result.todos and config.auto_create_todos:
         for todo in result.todos:
-            if _create_todo_document(todo, source_path, title, db_url, project):
+            if _create_todo_document(todo, source_path, title, db_url, project, use_modal):
                 stats["todos_created"] += 1
 
     # Process entities
     for entity in result.entities:
         if config.auto_create_entities:
-            if _create_entity_document(entity, document_id, db_url):
+            if _create_entity_document(entity, document_id, db_url, use_modal):
                 stats["entities_created"] += 1
         else:
             if _create_pending_entity(entity, document_id, db_url):
@@ -425,6 +498,7 @@ def get_unenriched_documents(
     source_type: str | None = None,
     project: str | None = None,
     query: str | None = None,
+    path_pattern: str | None = None,
     enrichment_version: int | None = None,
     limit: int = 100,
 ) -> list[dict]:
@@ -435,6 +509,7 @@ def get_unenriched_documents(
         source_type: Filter by source type
         project: Filter by project
         query: Semantic search query to filter documents
+        path_pattern: SQL LIKE pattern to filter source_path (e.g., '%myrepo%')
         enrichment_version: Only include docs with older version (for re-enrichment)
         limit: Maximum documents to return
 
@@ -464,6 +539,10 @@ def get_unenriched_documents(
         if project:
             sql += " AND d.metadata->>'project' = %s"
             params.append(project)
+
+        if path_pattern:
+            sql += " AND d.source_path LIKE %s"
+            params.append(path_pattern)
 
         # Exclude already-derived documents (escape % for psycopg)
         sql += " AND d.source_path NOT LIKE '%%::todo/%%'"
@@ -502,6 +581,10 @@ def get_unenriched_documents(
             if project:
                 sql += " AND d.metadata->>'project' = %s"
                 params.append(project)
+
+            if path_pattern:
+                sql += " AND d.source_path LIKE %s"
+                params.append(path_pattern)
 
             sql += " AND d.source_path NOT LIKE '%%::todo/%%'"
             sql += " AND d.source_path NOT LIKE 'okb://entity/%%'"
@@ -549,8 +632,13 @@ def list_pending_entities(
         return [dict(r) for r in results]
 
 
-def approve_entity(db_url: str, pending_id: str) -> str | None:
+def approve_entity(db_url: str, pending_id: str, use_modal: bool = False) -> str | None:
     """Approve a pending entity, creating the entity document.
+
+    Args:
+        db_url: Database URL
+        pending_id: ID of the pending entity to approve
+        use_modal: If True, use Modal GPU for embedding; else local CPU
 
     Returns the entity source_path, or None if failed.
     """
@@ -579,7 +667,7 @@ def approve_entity(db_url: str, pending_id: str) -> str | None:
             confidence=pe["confidence"] or 0.8,
         )
 
-        source_path = _create_entity_document(entity, pe["source_doc_id"], db_url)
+        source_path = _create_entity_document(entity, pe["source_doc_id"], db_url, use_modal)
 
         if source_path:
             # Mark as approved
@@ -594,6 +682,26 @@ def approve_entity(db_url: str, pending_id: str) -> str | None:
             conn.commit()
 
         return source_path
+
+
+def approve_entity_async(
+    db_url: str, pending_id: str, use_modal: bool = False
+) -> Future[str | None]:
+    """Approve a pending entity asynchronously.
+
+    The embedding and document creation happens in a background thread.
+    Returns a Future that can be awaited or checked later.
+
+    Args:
+        db_url: Database URL
+        pending_id: ID of the pending entity to approve
+        use_modal: If True, use Modal GPU for embedding; else local CPU
+
+    Returns:
+        Future that resolves to the entity source_path, or None if failed.
+    """
+    executor = _get_executor()
+    return executor.submit(approve_entity, db_url, pending_id, use_modal)
 
 
 def reject_entity(db_url: str, pending_id: str) -> bool:

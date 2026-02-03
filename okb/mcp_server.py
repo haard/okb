@@ -313,6 +313,69 @@ class KnowledgeBase:
         """).fetchall()
         return [r["project"] for r in results]
 
+    def get_project_stats(self) -> list[dict]:
+        """Get projects with document counts for consolidation review."""
+        conn = self.get_connection()
+        results = conn.execute("""
+            SELECT
+                metadata->>'project' as project,
+                COUNT(*) as doc_count,
+                array_agg(DISTINCT source_type) as source_types
+            FROM documents
+            WHERE metadata->>'project' IS NOT NULL
+            GROUP BY metadata->>'project'
+            ORDER BY doc_count DESC, project
+        """).fetchall()
+        return [dict(r) for r in results]
+
+    def list_documents_by_project(self, project: str, limit: int = 100) -> list[dict]:
+        """List documents for a specific project."""
+        conn = self.get_connection()
+        rows = conn.execute(
+            """SELECT source_path, title, source_type FROM documents
+               WHERE metadata->>'project' = %s ORDER BY title LIMIT %s""",
+            (project, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def rename_project(self, old_name: str, new_name: str) -> int:
+        """Rename a project (update all documents). Returns count of updated docs."""
+        conn = self.get_connection()
+        result = conn.execute(
+            """
+            UPDATE documents
+            SET metadata = jsonb_set(metadata, '{project}', %s::jsonb)
+            WHERE metadata->>'project' = %s
+            """,
+            (f'"{new_name}"', old_name),
+        )
+        conn.commit()
+        return result.rowcount
+
+    def set_document_project(self, source_path: str, project: str | None) -> bool:
+        """Set or clear the project for a single document."""
+        conn = self.get_connection()
+        if project:
+            result = conn.execute(
+                """
+                UPDATE documents
+                SET metadata = jsonb_set(metadata, '{project}', %s::jsonb)
+                WHERE source_path = %s
+                """,
+                (f'"{project}"', source_path),
+            )
+        else:
+            result = conn.execute(
+                """
+                UPDATE documents
+                SET metadata = metadata - 'project'
+                WHERE source_path = %s
+                """,
+                (source_path,),
+            )
+        conn.commit()
+        return result.rowcount > 0
+
     def get_document(self, source_path: str) -> dict | None:
         """Get full document content by path."""
         conn = self.get_connection()
@@ -435,10 +498,7 @@ class KnowledgeBase:
         }
 
     def delete_knowledge(self, source_path: str) -> bool:
-        """Delete a Claude-saved knowledge entry by source path."""
-        if not source_path.startswith("claude://"):
-            return False
-
+        """Delete a document by source path."""
         conn = self.get_connection()
         result = conn.execute(
             "DELETE FROM documents WHERE source_path = %s RETURNING id",
@@ -890,6 +950,7 @@ def _enrich_document(
     extract_todos: bool = True,
     extract_entities: bool = True,
     auto_create_entities: bool = False,
+    use_modal: bool = True,
 ) -> str:
     """Run enrichment on a specific document."""
     from psycopg.rows import dict_row
@@ -931,6 +992,7 @@ def _enrich_document(
             db_url=db_url,
             config=enrich_config,
             project=project,
+            use_modal=use_modal,
         )
 
     lines = [f"Enriched: {source_path}"]
@@ -976,11 +1038,29 @@ def _list_pending_entities(
     return "\n".join(lines)
 
 
-def _approve_entity(db_url: str, pending_id: str) -> str:
-    """Approve a pending entity."""
-    from .llm.enrich import approve_entity
+def _approve_entity(
+    db_url: str, pending_id: str, use_modal: bool = True, run_async: bool = False
+) -> str:
+    """Approve a pending entity.
 
-    source_path = approve_entity(db_url, pending_id)
+    Args:
+        db_url: Database URL
+        pending_id: ID of the pending entity
+        use_modal: If True, use Modal GPU for embedding; else local CPU
+        run_async: If True, return immediately while embedding happens in background
+    """
+    from .llm.enrich import approve_entity, approve_entity_async
+
+    if run_async:
+        future = approve_entity_async(db_url, pending_id, use_modal)
+        # Return immediately - don't wait for completion
+        return (
+            f"Entity approval queued (ID: {pending_id}). "
+            "Embedding is being generated in the background. "
+            "The entity will be searchable once complete."
+        )
+
+    source_path = approve_entity(db_url, pending_id, use_modal)
     if source_path:
         return f"Entity approved and created: `{source_path}`"
     return "Failed to approve entity. ID may be invalid or already processed."
@@ -1374,6 +1454,78 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_project_stats",
+            description=(
+                "Get projects with document counts. Use this to identify projects that should "
+                "be consolidated (similar names, typos, etc.)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="list_documents_by_project",
+            description="List all documents belonging to a specific project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Project name to list documents for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum documents to return (default: 100)",
+                        "default": 100,
+                    },
+                },
+                "required": ["project"],
+            },
+        ),
+        Tool(
+            name="rename_project",
+            description=(
+                "Rename a project, updating all documents. Use for consolidating similar "
+                "project names (e.g., 'my-app' and 'MyApp' -> 'my-app'). Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "old_name": {
+                        "type": "string",
+                        "description": "Current project name to rename",
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "New project name",
+                    },
+                },
+                "required": ["old_name", "new_name"],
+            },
+        ),
+        Tool(
+            name="set_document_project",
+            description=(
+                "Set or clear the project for a single document. Use to fix incorrectly "
+                "categorized documents. Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Path of the document to update",
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "New project name (omit or null to clear project)",
+                    },
+                },
+                "required": ["source_path"],
+            },
+        ),
+        Tool(
             name="recent_documents",
             description="Get recently indexed or updated documents.",
             inputSchema={
@@ -1422,8 +1574,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="delete_knowledge",
             description=(
-                "Delete a previously saved knowledge entry by its source path. "
-                "Only works for Claude-saved entries (claude:// paths)."
+                "Delete a document from the knowledge base by its source path. "
+                "Works for any document type. Requires write permission."
             ),
             inputSchema={
                 "type": "object",
@@ -1672,6 +1824,11 @@ async def list_tools() -> list[Tool]:
                         "default": False,
                         "description": "Auto-create entities instead of pending review",
                     },
+                    "use_local": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Use local CPU embedding instead of Modal GPU",
+                    },
                 },
                 "required": ["source_path"],
             },
@@ -1704,6 +1861,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Approve a pending entity, creating it as a searchable document. "
                 "The entity will be linked to its source document(s). "
+                "Use async=true to return immediately while embedding runs in background. "
                 "Requires write permission."
             ),
             inputSchema={
@@ -1712,6 +1870,19 @@ async def list_tools() -> list[Tool]:
                     "pending_id": {
                         "type": "string",
                         "description": "ID of the pending entity to approve",
+                    },
+                    "async": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If true, return immediately while embedding runs in background. "
+                            "Useful to avoid blocking when approving multiple entities."
+                        ),
+                    },
+                    "use_local": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Use local CPU embedding instead of Modal GPU",
                     },
                 },
                 "required": ["pending_id"],
@@ -2103,6 +2274,63 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 ]
             )
 
+        elif name == "get_project_stats":
+            stats = kb.get_project_stats()
+            if not stats:
+                return CallToolResult(content=[TextContent(type="text", text="No projects found.")])
+            output = ["## Project Statistics\n"]
+            output.append("| Project | Documents | Source Types |")
+            output.append("|---------|-----------|--------------|")
+            for s in stats:
+                types = ", ".join(s["source_types"]) if s["source_types"] else "-"
+                output.append(f"| {s['project']} | {s['doc_count']} | {types} |")
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
+
+        elif name == "list_documents_by_project":
+            project = arguments["project"]
+            limit = arguments.get("limit", 100)
+            docs = kb.list_documents_by_project(project, limit)
+            if not docs:
+                msg = f"No documents found for project '{project}'."
+                return CallToolResult(content=[TextContent(type="text", text=msg)])
+            output = [f"## Documents in '{project}' ({len(docs)} documents)\n"]
+            for d in docs:
+                output.append(f"- **{d['title'] or d['source_path']}** ({d['source_type']})")
+                output.append(f"  - `{d['source_path']}`")
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
+
+        elif name == "rename_project":
+            old_name = arguments["old_name"]
+            new_name = arguments["new_name"]
+            if old_name == new_name:
+                return CallToolResult(
+                    content=[TextContent(type="text", text="Old and new names are the same.")]
+                )
+            count = kb.rename_project(old_name, new_name)
+            if count == 0:
+                return CallToolResult(
+                    content=[TextContent(type="text", text=f"No documents found with project '{old_name}'.")]
+                )
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Renamed project '{old_name}' to '{new_name}' ({count} documents updated).")]
+            )
+
+        elif name == "set_document_project":
+            source_path = arguments["source_path"]
+            project = arguments.get("project")
+            success = kb.set_document_project(source_path, project)
+            if not success:
+                return CallToolResult(
+                    content=[TextContent(type="text", text=f"Document not found: {source_path}")]
+                )
+            if project:
+                return CallToolResult(
+                    content=[TextContent(type="text", text=f"Set project to '{project}' for {source_path}")]
+                )
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Cleared project for {source_path}")]
+            )
+
         elif name == "recent_documents":
             docs = kb.get_recent_documents(arguments.get("limit", 10))
             if not docs:
@@ -2158,13 +2386,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             deleted = kb.delete_knowledge(arguments["source_path"])
             if deleted:
                 return CallToolResult(
-                    content=[TextContent(type="text", text="Knowledge entry deleted.")]
+                    content=[TextContent(type="text", text="Document deleted.")]
                 )
             return CallToolResult(
                 content=[
                     TextContent(
                         type="text",
-                        text="Could not delete. Entry not found or not a Claude-saved entry.",
+                        text="Could not delete. Document not found.",
                     )
                 ]
             )
@@ -2304,6 +2532,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 extract_todos=arguments.get("extract_todos", True),
                 extract_entities=arguments.get("extract_entities", True),
                 auto_create_entities=arguments.get("auto_create_entities", False),
+                use_modal=not arguments.get("use_local", False),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
@@ -2316,7 +2545,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "approve_entity":
-            result = _approve_entity(kb.db_url, arguments["pending_id"])
+            result = _approve_entity(
+                kb.db_url,
+                arguments["pending_id"],
+                use_modal=not arguments.get("use_local", False),
+                run_async=arguments.get("async", False),
+            )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "reject_entity":

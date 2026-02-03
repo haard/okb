@@ -37,6 +37,7 @@ READ_ONLY_TOOLS = frozenset(
         "get_document",
         "list_sources",
         "list_projects",
+        "list_documents_by_project",
         "recent_documents",
         "get_actionable_items",
         "get_database_info",
@@ -222,6 +223,24 @@ class HTTPMCPServer:
                     content=[TextContent(type="text", text=f"## Projects\n\n{project_list}")]
                 )
 
+            elif name == "list_documents_by_project":
+                project = arguments["project"]
+                limit = arguments.get("limit", 100)
+                docs = kb.list_documents_by_project(project, limit)
+                if not docs:
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text", text=f"No documents found for project '{project}'."
+                            )
+                        ]
+                    )
+                output = [f"## Documents in '{project}' ({len(docs)} documents)\n"]
+                for d in docs:
+                    output.append(f"- **{d['title'] or d['source_path']}** ({d['source_type']})")
+                    output.append(f"  - `{d['source_path']}`")
+                return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
+
             elif name == "recent_documents":
                 from .mcp_server import format_relative_time, get_document_date
 
@@ -279,13 +298,13 @@ class HTTPMCPServer:
                 deleted = kb.delete_knowledge(arguments["source_path"])
                 if deleted:
                     return CallToolResult(
-                        content=[TextContent(type="text", text="Knowledge entry deleted.")]
+                        content=[TextContent(type="text", text="Document deleted.")]
                     )
                 return CallToolResult(
                     content=[
                         TextContent(
                             type="text",
-                            text="Could not delete. Entry not found or not a Claude-saved entry.",
+                            text="Could not delete. Document not found.",
                         )
                     ]
                 )
