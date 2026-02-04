@@ -244,14 +244,20 @@ okb token create --db default -d "Claude Code"
 okb serve --http --host 0.0.0.0 --port 8080
 ```
 
-Then configure Claude Code to connect via SSE:
+The server uses Streamable HTTP transport (RFC 9728 compliant):
+- `POST /mcp` - Send JSON-RPC messages, receive SSE response
+- `GET /mcp` - Establish SSE connection for server notifications
+- `DELETE /mcp` - Terminate session
+- `/sse` is an alias for `/mcp` for backward compatibility
+
+Configure your MCP client to connect:
 
 ```json
 {
   "mcpServers": {
     "knowledge-base": {
       "type": "sse",
-      "url": "http://localhost:8080/sse",
+      "url": "http://localhost:8080/mcp",
       "headers": {
         "Authorization": "Bearer okb_default_rw_a1b2c3d4e5f6g7h8"
       }

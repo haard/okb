@@ -1,9 +1,15 @@
 """HTTP transport server for MCP with token authentication.
 
-This module provides an HTTP server that serves the LKB MCP server with
-token-based authentication. Tokens can be passed via Authorization header
-or query parameter. A single HTTP server can serve multiple databases,
-with the token determining which database to use.
+This module provides an HTTP server that serves the OKB MCP server with
+token-based authentication using Streamable HTTP transport. Tokens can be
+passed via Authorization header or query parameter. A single HTTP server
+can serve multiple databases, with the token determining which database to use.
+
+Transport: Streamable HTTP (RFC 9728 compliant)
+- POST /mcp → send JSON-RPC messages, get SSE response
+- GET /mcp → optional standalone SSE for server notifications
+- DELETE /mcp → terminate session
+- Session ID in Mcp-Session-Id header
 """
 
 from __future__ import annotations
@@ -12,12 +18,11 @@ import sys
 from typing import Any
 
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CallToolResult, TextContent, Tool
-from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.routing import Mount, Route
+from starlette.responses import JSONResponse
 
 from .config import config
 from .local_embedder import warmup
@@ -81,14 +86,14 @@ def extract_token(request: Request) -> str | None:
 
 
 class HTTPMCPServer:
-    """HTTP server for MCP with token authentication."""
+    """HTTP server for MCP with token authentication using Streamable HTTP transport."""
 
     def __init__(self):
         self.knowledge_bases: dict[str, KnowledgeBase] = {}
         self.server = Server("knowledge-base")
-        # Single shared transport instance for all connections
-        self.transport = SseServerTransport("/messages/")
-        # Map session_id (hex string) -> token_info
+        # Session manager handles all transport complexity
+        self.session_manager = StreamableHTTPSessionManager(app=self.server)
+        # Map mcp-session-id -> token_info
         self.session_tokens: dict[str, TokenInfo] = {}
         self._setup_handlers()
 
@@ -563,95 +568,131 @@ class HTTPMCPServer:
         except Exception as e:
             return CallToolResult(content=[TextContent(type="text", text=f"Error: {e!s}")])
 
-    def create_app(self) -> Starlette:
+    def create_app(self):
         """Create the Starlette application."""
         verifier = OKBTokenVerifier(self._get_db_url)
+        session_header_name = "mcp-session-id"
 
-        async def handle_sse(request: Request) -> Response:
-            """Handle SSE connections for MCP."""
-            # Verify token
-            token = extract_token(request)
-            if not token:
-                return JSONResponse(
-                    {"error": "Missing token. Use Authorization header or ?token= parameter"},
-                    status_code=401,
-                )
+        def create_mcp_handler():
+            """Create an ASGI handler for MCP with auth."""
 
-            token_info = verifier.verify(token)
-            if not token_info:
-                return JSONResponse(
-                    {"error": "Invalid or expired token"},
-                    status_code=401,
-                )
+            async def handle_mcp(scope, receive, send):
+                """Handle all MCP requests (GET, POST, DELETE) with auth."""
+                request = Request(scope, receive)
 
-            # Track existing sessions before connecting
-            existing_sessions = set(self.transport._read_stream_writers.keys())
-
-            async with self.transport.connect_sse(
-                request.scope, request.receive, request._send
-            ) as (read_stream, write_stream):
-                # Find the new session ID by comparing before/after
-                current_sessions = set(self.transport._read_stream_writers.keys())
-                new_sessions = current_sessions - existing_sessions
-                if not new_sessions:
-                    return JSONResponse(
-                        {"error": "Failed to establish session"},
-                        status_code=500,
+                # Extract and verify token
+                token = extract_token(request)
+                if not token:
+                    response = JSONResponse(
+                        {"error": "Missing token. Use Authorization header or ?token= param"},
+                        status_code=401,
                     )
-                session_id = new_sessions.pop()
-                session_id_hex = session_id.hex
+                    await response(scope, receive, send)
+                    return
 
-                # Store token mapping for this session
-                self.session_tokens[session_id_hex] = token_info
+                token_info = verifier.verify(token)
+                if not token_info:
+                    response = JSONResponse(
+                        {"error": "Invalid or expired token"},
+                        status_code=401,
+                    )
+                    await response(scope, receive, send)
+                    return
+
+                # Check if this is an existing session
+                session_id = request.headers.get(session_header_name)
+                if session_id:
+                    # Verify token matches existing session (compare by hash and db, not object)
+                    existing_token = self.session_tokens.get(session_id)
+                    if existing_token:
+                        # Token must match the one used to create the session
+                        if (
+                            existing_token.token_hash != token_info.token_hash
+                            or existing_token.database != token_info.database
+                        ):
+                            response = JSONResponse(
+                                {"error": "Token mismatch for session"},
+                                status_code=401,
+                            )
+                            await response(scope, receive, send)
+                            return
+
+                # Set current token info for tool calls
                 self.server._current_token_info = token_info
 
-                try:
-                    await self.server.run(
-                        read_stream, write_stream, self.server.create_initialization_options()
-                    )
-                finally:
-                    # Clean up session on disconnect
-                    self.session_tokens.pop(session_id_hex, None)
+                # Wrap send to capture the session ID from response headers
+                captured_session_id = None
 
-            return Response()
+                async def send_wrapper(message):
+                    nonlocal captured_session_id
+                    if message["type"] == "http.response.start":
+                        headers = message.get("headers", [])
+                        for name, value in headers:
+                            header_name = (
+                                name.lower() if isinstance(name, bytes) else name.lower().encode()
+                            )
+                            if header_name == session_header_name.encode():
+                                captured_session_id = (
+                                    value.decode() if isinstance(value, bytes) else value
+                                )
+                                # Store immediately since SSE keeps connection open
+                                if captured_session_id not in self.session_tokens:
+                                    self.session_tokens[captured_session_id] = token_info
+                                break
+                    await send(message)
 
-        async def handle_messages(scope, receive, send):
-            """Handle POST messages for MCP (raw ASGI handler)."""
-            request = Request(scope, receive)
+                # Delegate to session manager
+                await self.session_manager.handle_request(scope, receive, send_wrapper)
 
-            # Look up session from query params
-            session_id = request.query_params.get("session_id")
-            if not session_id:
-                response = JSONResponse({"error": "Missing session_id"}, status_code=400)
-                await response(scope, receive, send)
-                return
+            return handle_mcp
 
-            token_info = self.session_tokens.get(session_id)
-            if not token_info:
-                response = JSONResponse({"error": "Invalid or expired session"}, status_code=401)
-                await response(scope, receive, send)
-                return
+        # Create the MCP handler ASGI app
+        mcp_handler = create_mcp_handler()
 
-            # Set current token info for tool calls
-            self.server._current_token_info = token_info
+        # Custom ASGI app that routes /mcp and /sse to MCP handler
+        async def router(scope, receive, send):
+            if scope["type"] == "http":
+                path = scope["path"].rstrip("/")  # Handle trailing slash
+                if path in ("/mcp", "/sse"):
+                    await mcp_handler(scope, receive, send)
+                    return
+                elif path == "/health" or scope["path"] == "/health":
+                    response = JSONResponse({"status": "ok"})
+                    await response(scope, receive, send)
+                    return
+            # 404 for unknown paths
+            response = JSONResponse({"error": "Not found"}, status_code=404)
+            await response(scope, receive, send)
 
-            await self.transport.handle_post_message(scope, receive, send)
+        # Wrap with lifespan handling
+        async def app_with_lifespan(scope, receive, send):
+            if scope["type"] == "lifespan":
+                async with self.session_manager.run():
+                    # Handle lifespan protocol
+                    while True:
+                        message = await receive()
+                        if message["type"] == "lifespan.startup":
+                            await send({"type": "lifespan.startup.complete"})
+                        elif message["type"] == "lifespan.shutdown":
+                            await send({"type": "lifespan.shutdown.complete"})
+                            return
+            else:
+                await router(scope, receive, send)
 
-        async def health(request: Request) -> JSONResponse:
-            """Health check endpoint."""
-            return JSONResponse({"status": "ok"})
+        # Add CORS for browser clients - wrap the raw ASGI app
+        app = CORSMiddleware(
+            app_with_lifespan,
+            allow_origins=["*"],
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", session_header_name],
+            expose_headers=[session_header_name],
+        )
 
-        routes = [
-            Route("/health", health, methods=["GET"]),
-            Route("/sse", handle_sse, methods=["GET"]),
-            Mount("/messages", app=handle_messages),
-        ]
-
-        return Starlette(routes=routes)
+        return app
 
 
 def run_http_server(host: str = "127.0.0.1", port: int = 8080):
-    """Run the HTTP MCP server."""
+    """Run the HTTP MCP server with Streamable HTTP transport."""
     import uvicorn
 
     print("Warming up embedding model...", file=sys.stderr)
@@ -662,8 +703,9 @@ def run_http_server(host: str = "127.0.0.1", port: int = 8080):
     app = http_server.create_app()
 
     print(f"Starting HTTP MCP server on http://{host}:{port}", file=sys.stderr)
-    print("  SSE endpoint: /sse", file=sys.stderr)
-    print("  Messages endpoint: /messages/", file=sys.stderr)
+    print("  MCP endpoint: /mcp (GET, POST, DELETE)", file=sys.stderr)
+    print("  MCP endpoint: /sse (alias for /mcp)", file=sys.stderr)
     print("  Health endpoint: /health", file=sys.stderr)
+    print("  Transport: Streamable HTTP", file=sys.stderr)
 
     uvicorn.run(app, host=host, port=port, log_level="info")
