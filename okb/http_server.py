@@ -43,6 +43,7 @@ READ_ONLY_TOOLS = frozenset(
         "list_sources",
         "list_projects",
         "list_documents_by_project",
+        "get_project_stats",
         "recent_documents",
         "get_actionable_items",
         "get_database_info",
@@ -51,6 +52,7 @@ READ_ONLY_TOOLS = frozenset(
         "list_pending_merges",
         "get_topic_clusters",
         "get_entity_relationships",
+        "list_snapshots",
     }
 )
 
@@ -71,6 +73,10 @@ WRITE_TOOLS = frozenset(
         "approve_merge",
         "reject_merge",
         "run_consolidation",
+        "rename_project",
+        "set_document_project",
+        "save_snapshot",
+        "restore_snapshot",
     }
 )
 
@@ -245,6 +251,65 @@ class HTTPMCPServer:
                     output.append(f"- **{d['title'] or d['source_path']}** ({d['source_type']})")
                     output.append(f"  - `{d['source_path']}`")
                 return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
+
+            elif name == "get_project_stats":
+                stats = kb.get_project_stats()
+                if not stats:
+                    return CallToolResult(
+                        content=[TextContent(type="text", text="No projects found.")]
+                    )
+                output = ["## Project Statistics\n"]
+                for p in stats:
+                    output.append(f"- **{p['project']}**: {p['document_count']} documents")
+                return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
+
+            elif name == "rename_project":
+                old_name = arguments["old_name"]
+                new_name = arguments["new_name"]
+                if old_name == new_name:
+                    return CallToolResult(
+                        content=[TextContent(type="text", text="Old and new names are the same.")]
+                    )
+                count = kb.rename_project(old_name, new_name)
+                if count == 0:
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text", text=f"No documents found with project '{old_name}'."
+                            )
+                        ]
+                    )
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=f"Renamed project '{old_name}' to '{new_name}' "
+                            f"({count} documents updated).",
+                        )
+                    ]
+                )
+
+            elif name == "set_document_project":
+                source_path = arguments["source_path"]
+                project = arguments.get("project")
+                success = kb.set_document_project(source_path, project)
+                if not success:
+                    return CallToolResult(
+                        content=[
+                            TextContent(type="text", text=f"Document not found: {source_path}")
+                        ]
+                    )
+                if project:
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text", text=f"Set project to '{project}' for {source_path}"
+                            )
+                        ]
+                    )
+                return CallToolResult(
+                    content=[TextContent(type="text", text=f"Cleared project for {source_path}")]
+                )
 
             elif name == "recent_documents":
                 from .mcp_server import format_relative_time, get_document_date

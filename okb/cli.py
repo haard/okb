@@ -429,6 +429,214 @@ def db_list():
 
 
 # =============================================================================
+# Snapshot commands
+# =============================================================================
+
+
+@db.group()
+@click.pass_context
+def snapshot(ctx):
+    """Manage database snapshots."""
+    pass
+
+
+def _get_snapshot_path(db_cfg, name: str) -> Path:
+    """Get the full path for a snapshot file."""
+    from okb.config import get_snapshots_dir
+
+    snapshots_dir = get_snapshots_dir(db_cfg.database_name)
+    return snapshots_dir / f"{name}.dump"
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes as human-readable size."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+@snapshot.command("save")
+@click.argument("name", required=False)
+@click.pass_context
+def snapshot_save(ctx, name):
+    """Create a database snapshot.
+
+    NAME is optional; defaults to timestamp (e.g., 20250204T143022).
+    """
+    if not _check_docker():
+        click.echo("Error: docker is not installed or not in PATH", err=True)
+        sys.exit(1)
+
+    status = _get_container_status()
+    if status != "running":
+        click.echo("Error: database container is not running", err=True)
+        sys.exit(1)
+
+    db_name = ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    if not db_cfg.managed:
+        click.echo(f"Error: database '{db_cfg.name}' is not managed by okb", err=True)
+        sys.exit(1)
+
+    # Generate name if not provided
+    if not name:
+        from datetime import datetime
+
+        name = datetime.now().strftime("%Y%m%dT%H%M%S")
+
+    snapshot_path = _get_snapshot_path(db_cfg, name)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if snapshot_path.exists():
+        click.echo(f"Error: snapshot '{name}' already exists", err=True)
+        sys.exit(1)
+
+    click.echo(f"Creating snapshot '{name}' for database '{db_cfg.database_name}'...")
+
+    # Run pg_dump inside container
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            config.docker_container_name,
+            "pg_dump",
+            "-U",
+            "knowledge",
+            "-Fc",  # Custom format (compressed, supports pg_restore)
+            db_cfg.database_name,
+        ],
+        capture_output=True,
+        timeout=600,  # 10 minute timeout for large databases
+    )
+
+    if result.returncode != 0:
+        click.echo(f"Error: pg_dump failed: {result.stderr.decode()}", err=True)
+        sys.exit(1)
+
+    # Write to file
+    snapshot_path.write_bytes(result.stdout)
+    size = _format_size(snapshot_path.stat().st_size)
+    click.echo(f"Saved snapshot: {snapshot_path} ({size})")
+
+
+@snapshot.command("list")
+@click.pass_context
+def snapshot_list(ctx):
+    """List available snapshots."""
+    from okb.config import get_snapshots_dir
+
+    db_name = ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+    snapshots_dir = get_snapshots_dir(db_cfg.database_name)
+
+    if not snapshots_dir.exists():
+        click.echo(f"No snapshots for database '{db_cfg.database_name}'")
+        return
+
+    snapshots = sorted(snapshots_dir.glob("*.dump"))
+    if not snapshots:
+        click.echo(f"No snapshots for database '{db_cfg.database_name}'")
+        return
+
+    click.echo(f"Snapshots for '{db_cfg.database_name}':")
+    for snap in snapshots:
+        stat = snap.stat()
+        size = _format_size(stat.st_size)
+        from datetime import datetime
+
+        mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+        name = snap.stem
+        click.echo(f"  {name}  {size:>10}  {mtime}")
+
+
+@snapshot.command("restore")
+@click.argument("name")
+@click.pass_context
+def snapshot_restore(ctx, name):
+    """Restore database from a snapshot.
+
+    WARNING: This will replace all data in the database.
+    """
+    if not _check_docker():
+        click.echo("Error: docker is not installed or not in PATH", err=True)
+        sys.exit(1)
+
+    status = _get_container_status()
+    if status != "running":
+        click.echo("Error: database container is not running", err=True)
+        sys.exit(1)
+
+    db_name = ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    if not db_cfg.managed:
+        click.echo(f"Error: database '{db_cfg.name}' is not managed by okb", err=True)
+        sys.exit(1)
+
+    snapshot_path = _get_snapshot_path(db_cfg, name)
+    if not snapshot_path.exists():
+        click.echo(f"Error: snapshot '{name}' not found", err=True)
+        sys.exit(1)
+
+    if not click.confirm(
+        f"This will replace ALL data in database '{db_cfg.database_name}' with snapshot '{name}'. "
+        "Continue?"
+    ):
+        return
+
+    click.echo(f"Restoring '{name}' to database '{db_cfg.database_name}'...")
+
+    # Read snapshot and pipe to pg_restore
+    snapshot_data = snapshot_path.read_bytes()
+
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            config.docker_container_name,
+            "pg_restore",
+            "-U",
+            "knowledge",
+            "-d",
+            db_cfg.database_name,
+            "--clean",
+            "--if-exists",
+        ],
+        input=snapshot_data,
+        capture_output=True,
+        timeout=600,
+    )
+
+    # pg_restore may return warnings even on success
+    if result.returncode != 0 and b"error" in result.stderr.lower():
+        click.echo(f"Error: pg_restore failed: {result.stderr.decode()}", err=True)
+        sys.exit(1)
+
+    click.echo("Restore complete.")
+
+
+@snapshot.command("delete")
+@click.argument("name")
+@click.pass_context
+def snapshot_delete(ctx, name):
+    """Delete a snapshot."""
+    db_name = ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    snapshot_path = _get_snapshot_path(db_cfg, name)
+    if not snapshot_path.exists():
+        click.echo(f"Error: snapshot '{name}' not found", err=True)
+        sys.exit(1)
+
+    snapshot_path.unlink()
+    click.echo(f"Deleted snapshot '{name}'")
+
+
+# =============================================================================
 # Config commands
 # =============================================================================
 

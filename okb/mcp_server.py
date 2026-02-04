@@ -1301,6 +1301,168 @@ def _run_consolidation(
     return format_consolidation_result(result)
 
 
+def _format_size(size_bytes: int) -> str:
+    """Format bytes as human-readable size."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def _save_snapshot(name: str | None = None) -> str:
+    """Create a database snapshot."""
+    import subprocess
+
+    from .config import get_snapshots_dir
+
+    db_cfg = config.get_database()
+
+    if not db_cfg.managed:
+        return (
+            f"Error: database '{db_cfg.name}' is not managed by okb "
+            "(external databases not supported)"
+        )
+
+    # Check container is running
+    try:
+        result = subprocess.run(
+            [
+                "docker", "container", "inspect", "-f", "{{.State.Status}}",
+                config.docker_container_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or result.stdout.strip() != "running":
+            return "Error: database container is not running"
+    except Exception as e:
+        return f"Error checking container status: {e}"
+
+    # Generate name if not provided
+    if not name:
+        name = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+
+    snapshots_dir = get_snapshots_dir(db_cfg.database_name)
+    snapshot_path = snapshots_dir / f"{name}.dump"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    if snapshot_path.exists():
+        return f"Error: snapshot '{name}' already exists"
+
+    # Run pg_dump
+    try:
+        result = subprocess.run(
+            [
+                "docker", "exec", config.docker_container_name,
+                "pg_dump", "-U", "knowledge", "-Fc", db_cfg.database_name,
+            ],
+            capture_output=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            return f"Error: pg_dump failed: {result.stderr.decode()}"
+
+        snapshot_path.write_bytes(result.stdout)
+        size = _format_size(snapshot_path.stat().st_size)
+        return f"Created snapshot '{name}' ({size})\nPath: {snapshot_path}"
+    except subprocess.TimeoutExpired:
+        return "Error: pg_dump timed out (>10 minutes)"
+    except Exception as e:
+        return f"Error creating snapshot: {e}"
+
+
+def _list_snapshots() -> str:
+    """List available database snapshots."""
+    from .config import get_snapshots_dir
+
+    db_cfg = config.get_database()
+    snapshots_dir = get_snapshots_dir(db_cfg.database_name)
+
+    if not snapshots_dir.exists():
+        return f"No snapshots for database '{db_cfg.database_name}'"
+
+    snapshots = sorted(snapshots_dir.glob("*.dump"))
+    if not snapshots:
+        return f"No snapshots for database '{db_cfg.database_name}'"
+
+    lines = [f"## Snapshots for '{db_cfg.database_name}'\n"]
+    lines.append("| Name | Size | Created |")
+    lines.append("|------|------|---------|")
+    for snap in snapshots:
+        stat = snap.stat()
+        size = _format_size(stat.st_size)
+        mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime("%Y-%m-%d %H:%M")
+        lines.append(f"| {snap.stem} | {size} | {mtime} |")
+
+    return "\n".join(lines)
+
+
+def _restore_snapshot(name: str, confirm: bool) -> str:
+    """Restore database from a snapshot."""
+    import subprocess
+
+    from .config import get_snapshots_dir
+
+    if not confirm:
+        return (
+            "Error: restore requires explicit confirmation. "
+            "Set confirm=true to proceed. WARNING: This will replace ALL data in the database."
+        )
+
+    db_cfg = config.get_database()
+
+    if not db_cfg.managed:
+        return (
+            f"Error: database '{db_cfg.name}' is not managed by okb "
+            "(external databases not supported)"
+        )
+
+    # Check container is running
+    try:
+        result = subprocess.run(
+            [
+                "docker", "container", "inspect", "-f", "{{.State.Status}}",
+                config.docker_container_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or result.stdout.strip() != "running":
+            return "Error: database container is not running"
+    except Exception as e:
+        return f"Error checking container status: {e}"
+
+    snapshot_path = get_snapshots_dir(db_cfg.database_name) / f"{name}.dump"
+    if not snapshot_path.exists():
+        return f"Error: snapshot '{name}' not found"
+
+    # Run pg_restore
+    try:
+        snapshot_data = snapshot_path.read_bytes()
+        result = subprocess.run(
+            [
+                "docker", "exec", "-i", config.docker_container_name,
+                "pg_restore", "-U", "knowledge", "-d", db_cfg.database_name,
+                "--clean", "--if-exists",
+            ],
+            input=snapshot_data,
+            capture_output=True,
+            timeout=600,
+        )
+        # pg_restore may return warnings even on success
+        if result.returncode != 0 and b"error" in result.stderr.lower():
+            return f"Error: pg_restore failed: {result.stderr.decode()}"
+
+        return f"Restored database '{db_cfg.database_name}' from snapshot '{name}'"
+    except subprocess.TimeoutExpired:
+        return "Error: pg_restore timed out (>10 minutes)"
+    except Exception as e:
+        return f"Error restoring snapshot: {e}"
+
+
 def build_server_instructions(db_config) -> str | None:
     """Build server instructions from database config and LLM metadata."""
     parts = []
@@ -2112,6 +2274,51 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="save_snapshot",
+            description=(
+                "Create a database snapshot for backup or migration. "
+                "Only works for managed (Docker) databases. Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Snapshot name (default: timestamp like 20250204T143022)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="list_snapshots",
+            description="List available database snapshots with metadata (size, date).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="restore_snapshot",
+            description=(
+                "Restore database from a snapshot. WARNING: This replaces ALL data. "
+                "Only works for managed databases. Requires write permission and confirm=true."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the snapshot to restore",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Must be true to proceed with restore (safety check)",
+                    },
+                },
+                "required": ["name", "confirm"],
+            },
+        ),
     ]
 
 
@@ -2622,6 +2829,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 build_clusters=arguments.get("build_clusters", True),
                 extract_relationships=arguments.get("extract_relationships", True),
                 dry_run=arguments.get("dry_run", False),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "save_snapshot":
+            result = _save_snapshot(arguments.get("name"))
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "list_snapshots":
+            result = _list_snapshots()
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "restore_snapshot":
+            result = _restore_snapshot(
+                arguments["name"],
+                arguments.get("confirm", False),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 

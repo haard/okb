@@ -78,6 +78,19 @@ def get_config_path() -> Path:
     return get_config_dir() / "config.yaml"
 
 
+def get_data_dir() -> Path:
+    """Get the data directory, respecting XDG_DATA_HOME."""
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    if xdg_data:
+        return Path(xdg_data) / "okb"
+    return Path.home() / ".local" / "share" / "okb"
+
+
+def get_snapshots_dir(database_name: str) -> Path:
+    """Get snapshots directory for a database."""
+    return get_data_dir() / "snapshots" / database_name
+
+
 def load_config_file() -> dict[str, Any]:
     """Load configuration from config file if it exists."""
     config_path = get_config_path()
