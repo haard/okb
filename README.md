@@ -39,6 +39,10 @@ okb ingest ~/notes ~/docs
 | `okb db migrate [name]` | Apply pending migrations (optionally for specific db) |
 | `okb db list` | List configured databases |
 | `okb db destroy` | Remove container and volume (destructive) |
+| `okb db snapshot save [name]` | Create database snapshot (default: timestamp) |
+| `okb db snapshot list` | List available snapshots |
+| `okb db snapshot restore <name>` | Restore from snapshot (with confirmation) |
+| `okb db snapshot delete <name>` | Delete a snapshot |
 | `okb ingest <paths>` | Ingest documents into knowledge base |
 | `okb ingest <paths> --local` | Ingest using local GPU/CPU embedding (no Modal) |
 | `okb serve` | Start MCP server (stdio, for Claude Code) |
