@@ -554,11 +554,15 @@ def snapshot_list(ctx):
 
 @snapshot.command("restore")
 @click.argument("name")
+@click.option("--no-backup", is_flag=True, help="Skip creating pre-restore backup")
 @click.pass_context
-def snapshot_restore(ctx, name):
+def snapshot_restore(ctx, name, no_backup):
     """Restore database from a snapshot.
 
     WARNING: This will replace all data in the database.
+
+    By default, creates a pre-restore backup before restoring.
+    Use --no-backup to skip the backup step.
     """
     if not _check_docker():
         click.echo("Error: docker is not installed or not in PATH", err=True)
@@ -586,6 +590,39 @@ def snapshot_restore(ctx, name):
         "Continue?"
     ):
         return
+
+    # Create pre-restore backup unless --no-backup is set
+    if not no_backup:
+        from datetime import datetime
+
+        backup_name = f"pre-restore-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        backup_path = _get_snapshot_path(db_cfg, backup_name)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+
+        click.echo(f"Creating pre-restore backup '{backup_name}'...")
+        backup_result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                config.docker_container_name,
+                "pg_dump",
+                "-U",
+                "knowledge",
+                "-Fc",
+                db_cfg.database_name,
+            ],
+            capture_output=True,
+            timeout=600,
+        )
+
+        if backup_result.returncode != 0:
+            click.echo(
+                f"Warning: pre-restore backup failed: {backup_result.stderr.decode()}", err=True
+            )
+        else:
+            backup_path.write_bytes(backup_result.stdout)
+            size = _format_size(backup_path.stat().st_size)
+            click.echo(f"Created pre-restore backup: {backup_name} ({size})")
 
     click.echo(f"Restoring '{name}' to database '{db_cfg.database_name}'...")
 

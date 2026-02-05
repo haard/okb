@@ -41,7 +41,8 @@ okb ingest ~/notes ~/docs
 | `okb db destroy` | Remove container and volume (destructive) |
 | `okb db snapshot save [name]` | Create database snapshot (default: timestamp) |
 | `okb db snapshot list` | List available snapshots |
-| `okb db snapshot restore <name>` | Restore from snapshot (with confirmation) |
+| `okb db snapshot restore <name>` | Restore from snapshot (creates pre-restore backup) |
+| `okb db snapshot restore <name> --no-backup` | Restore without pre-restore backup |
 | `okb db snapshot delete <name>` | Delete a snapshot |
 | `okb ingest <paths>` | Ingest documents into knowledge base |
 | `okb ingest <paths> --local` | Ingest using local GPU/CPU embedding (no Modal) |

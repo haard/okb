@@ -1439,6 +1439,14 @@ def _restore_snapshot(name: str, confirm: bool) -> str:
     if not snapshot_path.exists():
         return f"Error: snapshot '{name}' not found"
 
+    # Create pre-restore backup (always for MCP - safety first for LLM agents)
+    backup_name = f"pre-restore-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
+    backup_result = _save_snapshot(backup_name)
+    backup_warning = ""
+    if backup_result.startswith("Error"):
+        backup_warning = f" Warning: pre-restore backup failed ({backup_result})"
+        backup_name = None
+
     # Run pg_restore
     try:
         snapshot_data = snapshot_path.read_bytes()
@@ -1456,7 +1464,12 @@ def _restore_snapshot(name: str, confirm: bool) -> str:
         if result.returncode != 0 and b"error" in result.stderr.lower():
             return f"Error: pg_restore failed: {result.stderr.decode()}"
 
-        return f"Restored database '{db_cfg.database_name}' from snapshot '{name}'"
+        msg = f"Restored database '{db_cfg.database_name}' from snapshot '{name}'"
+        if backup_name:
+            msg += f". Pre-restore backup saved as '{backup_name}'"
+        if backup_warning:
+            msg += f".{backup_warning}"
+        return msg
     except subprocess.TimeoutExpired:
         return "Error: pg_restore timed out (>10 minutes)"
     except Exception as e:
