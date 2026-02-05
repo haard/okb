@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2025-02-05
+
 ### Added
 - Database snapshot commands (`okb db snapshot save/list/restore/delete`) for backup and restore
 - MCP tools for snapshots: `save_snapshot`, `list_snapshots`, `restore_snapshot`
