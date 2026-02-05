@@ -1,0 +1,39 @@
+#+TITLE: Test Org Document
+#+AUTHOR: Test Author
+#+DATE: 2024-01-15
+#+FILETAGS: :project:testing:
+
+* Introduction
+
+This is a sample org-mode document for testing.
+
+* TODO Write unit tests                                           :python:dev:
+DEADLINE: <2024-02-01 Thu>
+
+Need to write comprehensive unit tests.
+
+* DONE Set up project structure                                      :setup:
+CLOSED: [2024-01-10 Wed 14:30]
+
+Initial project setup is complete.
+
+* TODO [#A] High priority task
+SCHEDULED: <2024-01-20 Sat 10:00>
+
+This is urgent.
+
+* TODO [#B] Medium priority task
+
+Regular priority.
+
+* WAITING Review PR                                                  :review:
+
+Waiting for feedback.
+
+* SOMEDAY Learn Rust                                              :learning:
+
+Would be nice to learn someday.
+
+* Regular Heading
+
+This heading has no TODO keyword.

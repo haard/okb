@@ -42,10 +42,6 @@ all = [
     "anthropic>=0.40.0",
     "todoist-api-python>=3.0.0",
 ]
-dev = [
-    "pytest>=7.0.0",
-    "ruff>=0.1.0",
-]
 
 [project.scripts]
 okb = "okb.cli:main"
@@ -79,9 +75,19 @@ packages = [{include = "okb"}]
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+pytest-mock = ">=3.10.0"
+ruff = ">=0.1.0"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=okb --cov-report=term-missing"
