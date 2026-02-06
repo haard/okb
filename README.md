@@ -79,6 +79,13 @@ okb ingest ~/notes ~/docs
 | `okb enrich reject-merge <id>` | Reject an entity merge |
 | `okb enrich clusters` | List topic clusters |
 | `okb enrich relationships` | List entity relationships |
+| `okb service install` | Install systemd user services for background operation |
+| `okb service uninstall` | Remove systemd user services |
+| `okb service status` | Show service status |
+| `okb service start` | Start okb services |
+| `okb service stop` | Stop okb services |
+| `okb service restart` | Restart services (use after upgrading okb) |
+| `okb service logs [-f]` | Show service logs (optionally follow) |
 
 
 ## Configuration

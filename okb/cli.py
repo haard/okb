@@ -2706,5 +2706,254 @@ def enrich_review(
     click.echo(f"  {skipped} skipped")
 
 
+# =============================================================================
+# Service commands (systemd user services)
+# =============================================================================
+
+
+def _get_systemd_user_dir() -> Path:
+    """Get systemd user service directory."""
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _get_okb_path() -> str | None:
+    """Get the path to the okb executable."""
+    return shutil.which("okb")
+
+
+def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run systemctl --user command."""
+    cmd = ["systemctl", "--user"] + list(args)
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def _generate_db_service(okb_path: str) -> str:
+    """Generate okb-db.service content."""
+    return f"""[Unit]
+Description=OKB Database Container
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={okb_path} db start
+ExecStop={okb_path} db stop
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _generate_http_service(okb_path: str) -> str:
+    """Generate okb.service content."""
+    # Build a minimal PATH with essential directories
+    # Filter out problematic paths (WSL Windows paths with spaces, etc.)
+    current_path = os.environ.get("PATH", "")
+    essential_paths = []
+    for p in current_path.split(":"):
+        # Skip Windows paths in WSL (contain spaces, not needed)
+        if p.startswith("/mnt/"):
+            continue
+        # Skip paths with spaces (would break systemd Environment line)
+        if " " in p:
+            continue
+        # Keep paths that exist
+        if Path(p).is_dir():
+            essential_paths.append(p)
+
+    # Ensure we have basic system paths
+    for fallback in ["/usr/local/bin", "/usr/bin", "/bin"]:
+        if fallback not in essential_paths and Path(fallback).is_dir():
+            essential_paths.append(fallback)
+
+    path_dirs = ":".join(essential_paths)
+
+    return f"""[Unit]
+Description=OKB Knowledge Base HTTP Server
+After=okb-db.service
+Requires=okb-db.service
+
+[Service]
+Type=simple
+ExecStart={okb_path} serve --http
+Restart=on-failure
+RestartSec=5
+Environment=PATH={path_dirs}
+
+[Install]
+WantedBy=default.target
+"""
+
+
+@main.group()
+def service():
+    """Manage okb systemd user services."""
+    pass
+
+
+@service.command("install")
+@click.option("--no-start", is_flag=True, help="Don't enable/start services after install")
+def service_install(no_start: bool):
+    """Install systemd user services for okb.
+
+    Creates two systemd user services:
+      - okb-db.service: Manages the Docker container
+      - okb.service: HTTP server (depends on okb-db)
+
+    After installation, services are enabled and started by default.
+    """
+    okb_path = _get_okb_path()
+    if not okb_path:
+        click.echo("Error: okb executable not found in PATH", err=True)
+        sys.exit(1)
+
+    systemd_dir = _get_systemd_user_dir()
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+
+    db_service_path = systemd_dir / "okb-db.service"
+    http_service_path = systemd_dir / "okb.service"
+
+    # Write service files
+    click.echo(f"Installing service files to {systemd_dir}")
+
+    db_service_content = _generate_db_service(okb_path)
+    db_service_path.write_text(db_service_content)
+    click.echo(f"  Created {db_service_path.name}")
+
+    http_service_content = _generate_http_service(okb_path)
+    http_service_path.write_text(http_service_content)
+    click.echo(f"  Created {http_service_path.name}")
+
+    # Reload systemd
+    click.echo("Reloading systemd...")
+    result = _systemctl("daemon-reload", check=False)
+    if result.returncode != 0:
+        click.echo(f"Warning: daemon-reload failed: {result.stderr}", err=True)
+
+    if not no_start:
+        # Enable and start services
+        click.echo("Enabling and starting services...")
+        result = _systemctl("enable", "--now", "okb-db", "okb", check=False)
+        if result.returncode != 0:
+            click.echo(f"Warning: failed to enable/start services: {result.stderr}", err=True)
+        else:
+            click.echo("Services started.")
+
+    click.echo("")
+    click.echo("Installation complete.")
+    click.echo("")
+    click.echo("To persist services after logout, run:")
+    click.echo("  sudo loginctl enable-linger $USER")
+
+
+@service.command("uninstall")
+def service_uninstall():
+    """Remove systemd user services.
+
+    Stops and disables the services, then removes the service files.
+    """
+    systemd_dir = _get_systemd_user_dir()
+    db_service_path = systemd_dir / "okb-db.service"
+    http_service_path = systemd_dir / "okb.service"
+
+    # Stop services if running
+    click.echo("Stopping services...")
+    _systemctl("stop", "okb", "okb-db", check=False)
+
+    # Disable services
+    click.echo("Disabling services...")
+    _systemctl("disable", "okb", "okb-db", check=False)
+
+    # Remove service files
+    removed = []
+    for path in [http_service_path, db_service_path]:
+        if path.exists():
+            path.unlink()
+            removed.append(path.name)
+            click.echo(f"  Removed {path.name}")
+
+    if not removed:
+        click.echo("No service files found.")
+        return
+
+    # Reload systemd
+    click.echo("Reloading systemd...")
+    _systemctl("daemon-reload", check=False)
+
+    click.echo("Uninstallation complete.")
+
+
+@service.command("status")
+def service_status():
+    """Show status of okb services."""
+    # Check if service files exist
+    systemd_dir = _get_systemd_user_dir()
+    db_service_path = systemd_dir / "okb-db.service"
+    http_service_path = systemd_dir / "okb.service"
+
+    if not db_service_path.exists() and not http_service_path.exists():
+        click.echo("okb services are not installed.")
+        click.echo("Run 'okb service install' to install them.")
+        return
+
+    # Show status for both services
+    result = subprocess.run(
+        ["systemctl", "--user", "status", "okb-db", "okb", "--no-pager"],
+        capture_output=False,
+        check=False,
+    )
+    sys.exit(result.returncode)
+
+
+@service.command("start")
+def service_start():
+    """Start okb services."""
+    click.echo("Starting okb services...")
+    result = _systemctl("start", "okb-db", "okb", check=False)
+    if result.returncode != 0:
+        click.echo(f"Error: {result.stderr}", err=True)
+        sys.exit(1)
+    click.echo("Services started.")
+
+
+@service.command("stop")
+def service_stop():
+    """Stop okb services."""
+    click.echo("Stopping okb services...")
+    result = _systemctl("stop", "okb", "okb-db", check=False)
+    if result.returncode != 0:
+        click.echo(f"Error: {result.stderr}", err=True)
+        sys.exit(1)
+    click.echo("Services stopped.")
+
+
+@service.command("restart")
+def service_restart():
+    """Restart okb services.
+
+    Use this after upgrading okb to pick up code changes.
+    """
+    click.echo("Restarting okb services...")
+    result = _systemctl("restart", "okb-db", "okb", check=False)
+    if result.returncode != 0:
+        click.echo(f"Error: {result.stderr}", err=True)
+        sys.exit(1)
+    click.echo("Services restarted.")
+
+
+@service.command("logs")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output")
+@click.option("-n", "--lines", default=50, help="Number of lines to show")
+def service_logs(follow: bool, lines: int):
+    """Show service logs from journalctl."""
+    cmd = ["journalctl", "--user", "-u", "okb-db", "-u", "okb", "--no-pager", "-n", str(lines)]
+    if follow:
+        cmd.append("-f")
+
+    try:
+        subprocess.run(cmd, check=False)
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == "__main__":
     main()
