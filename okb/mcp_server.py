@@ -778,6 +778,7 @@ def _run_sync(
     sync_all: bool = False,
     full: bool = False,
     doc_ids: list[str] | None = None,
+    repos: list[str] | None = None,
 ) -> str:
     """Run sync for specified sources and return formatted result."""
     from psycopg.rows import dict_row
@@ -828,6 +829,10 @@ def _run_sync(
             # Inject doc_ids if provided (for sources that support it)
             if doc_ids:
                 source_cfg = {**source_cfg, "doc_ids": doc_ids}
+
+            # Inject repos if provided (for github source)
+            if repos:
+                source_cfg = {**source_cfg, "repos": repos}
 
             try:
                 source.configure(source_cfg)
@@ -1932,6 +1937,14 @@ async def list_tools() -> list[Tool]:
                             "If provided, only these documents are synced."
                         ),
                     },
+                    "repos": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "GitHub repos to sync (owner/repo format, can specify multiple). "
+                            "Required for github source if not pre-configured in config."
+                        ),
+                    },
                 },
             },
         ),
@@ -2729,6 +2742,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 sync_all=arguments.get("all", False),
                 full=arguments.get("full", False),
                 doc_ids=arguments.get("doc_ids"),
+                repos=arguments.get("repos"),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 

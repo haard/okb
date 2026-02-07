@@ -295,7 +295,7 @@ Configure your MCP client to connect:
 | `get_database_info` | Get database description, topics, and stats |
 | `set_database_description` | Update database description/topics (LLM can self-document) |
 | `add_todo` | Create a TODO item in the knowledge base |
-| `trigger_sync` | Sync API sources (Todoist, GitHub, Dropbox Paper) |
+| `trigger_sync` | Sync API sources (Todoist, GitHub, Dropbox Paper). Accepts `repos` for GitHub. |
 | `trigger_rescan` | Check indexed files for changes and re-ingest |
 | `list_sync_sources` | List available API sync sources with status |
 | `enrich_document` | Run LLM enrichment to extract TODOs/entities |

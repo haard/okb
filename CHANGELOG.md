@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Systemd user services for background operation (`okb service install/uninstall/status/start/stop/restart/logs`)
+- `repos` parameter to `trigger_sync` MCP tool for GitHub sync without pre-configuration
+
 ## [1.2.0] - 2025-02-05
 
 ### Added
