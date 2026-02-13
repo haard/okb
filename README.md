@@ -289,7 +289,7 @@ Configure your MCP client to connect:
 | `list_sources` | Show indexed document stats |
 | `list_projects` | List known projects |
 | `recent_documents` | Show recently indexed files |
-| `save_knowledge` | Save knowledge from Claude for future reference |
+| `save_knowledge` | Save knowledge from Claude (`source_type`: `claude-note` or `synthesis`) |
 | `delete_knowledge` | Delete a Claude-saved knowledge entry |
 | `get_actionable_items` | Query tasks/events with structured filters |
 | `get_database_info` | Get database description, topics, and stats |
@@ -303,6 +303,7 @@ Configure your MCP client to connect:
 | `approve_entity` | Approve a pending entity |
 | `reject_entity` | Reject a pending entity |
 | `analyze_knowledge_base` | Analyze content and generate description/topics |
+| `get_synthesis_samples` | Get document samples and stats for LLM-driven synthesis |
 | `find_entity_duplicates` | Find potential duplicate entities |
 | `merge_entities` | Merge duplicate entities |
 | `list_pending_merges` | List pending merge proposals |

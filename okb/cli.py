@@ -1672,287 +1672,339 @@ def llm_deploy():
 
 
 # =============================================================================
-# Enrich commands
+# Synthesize commands
 # =============================================================================
 
 
 @main.group()
-def enrich():
-    """LLM-based document enrichment (extract TODOs and entities)."""
+def synthesize():
+    """LLM-based knowledge synthesis (generate topic summaries and insights)."""
     pass
 
 
-@enrich.command("run")
-@click.option("--db", "database", default=None, help="Database to enrich")
-@click.option("--source-type", default=None, help="Filter by source type")
-@click.option("--project", default=None, help="Filter by project")
-@click.option("--query", default=None, help="Semantic search query to filter documents")
-@click.option("--path-pattern", default=None, help="SQL LIKE pattern for source_path")
-@click.option(
-    "--all", "enrich_all", is_flag=True, help="Re-enrich all documents (ignore enriched_at)"
-)
-@click.option("--dry-run", is_flag=True, help="Show what would be enriched without executing")
-@click.option("--limit", default=100, help="Maximum documents to process")
-@click.option("--workers", default=None, type=int, help="Parallel workers (default: docs/5, min 1)")
+@synthesize.command("run")
+@click.option("--db", "database", default=None, help="Database to synthesize from")
+@click.option("--project", default=None, help="Scope to specific project")
+@click.option("--sample-size", default=25, help="Number of documents to sample")
+@click.option("--max-proposals", default=10, help="Maximum proposals to generate")
+@click.option("--dry-run", is_flag=True, help="Show what would be sampled without calling LLM")
 @click.pass_context
-def enrich_run(
+def synthesize_run(
     ctx,
     database: str | None,
-    source_type: str | None,
     project: str | None,
-    query: str | None,
-    path_pattern: str | None,
-    enrich_all: bool,
+    sample_size: int,
+    max_proposals: int,
     dry_run: bool,
-    limit: int,
-    workers: int | None,
 ):
-    """Run enrichment on documents to extract TODOs and entities.
+    """Run synthesis to propose knowledge documents.
 
-    By default, only processes documents that haven't been enriched yet.
-    Use --all to re-enrich all documents (e.g., after changing enrichment config).
+    Samples the database broadly and uses LLM to propose topic summaries,
+    entity profiles, relationship maps, and cross-cutting insights.
 
     Examples:
 
-        okb enrich run                  # Enrich un-enriched documents
+        okb synthesize run                      # Generate proposals
 
-        okb enrich run --dry-run        # Show what would be enriched
+        okb synthesize run --dry-run            # Preview what would be sampled
 
-        okb enrich run --all            # Re-enrich everything
+        okb synthesize run --project myproject  # Scope to project
 
-        okb enrich run --source-type markdown  # Only markdown files
-
-        okb enrich run --query "meeting notes"  # Filter by semantic search
-
-        okb enrich run --path-pattern '%myrepo%'  # Filter by source path
-
-        okb enrich run --workers 8      # Use 8 parallel workers
+        okb synthesize run --max-proposals 5    # Fewer proposals
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     from .llm import get_llm
-    from .llm.enrich import EnrichmentConfig, get_unenriched_documents, process_enrichment
+    from .llm.analyze import get_content_stats, get_document_samples
 
-    # Check LLM is configured before doing any work
     if get_llm() is None:
         click.echo("Error: No LLM provider configured.", err=True)
-        click.echo("", err=True)
-        click.echo("Enrichment requires an LLM to extract TODOs and entities.", err=True)
-        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml:", err=True)
-        click.echo("", err=True)
-        click.echo("  llm:", err=True)
-        click.echo("    provider: claude", err=True)
-        click.echo("    model: claude-haiku-4-5-20251001", err=True)
-        click.echo("", err=True)
-        click.echo("Run 'okb llm status' to check configuration.", err=True)
+        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml", err=True)
         ctx.exit(1)
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
 
-    # Get enrichment version for re-enrichment check
-    enrichment_version = config.enrichment_version if enrich_all else None
-
-    click.echo(f"Scanning database '{db_cfg.name}' for documents to enrich...")
-    if dry_run:
-        click.echo("(dry run - no changes will be made)")
-
-    docs = get_unenriched_documents(
-        db_url=db_cfg.url,
-        source_type=source_type,
-        project=project,
-        query=query,
-        path_pattern=path_pattern,
-        enrichment_version=enrichment_version,
-        limit=limit,
-    )
-
-    if not docs:
-        click.echo("No documents need enrichment.")
-        return
-
-    click.echo(f"Found {len(docs)} documents to enrich")
+    scope = f"project '{project}'" if project else f"database '{db_cfg.name}'"
+    click.echo(f"Synthesizing from {scope}...")
 
     if dry_run:
-        for doc in docs[:20]:
-            click.echo(f"  - {doc['title']} ({doc['source_type']})")
-        if len(docs) > 20:
-            click.echo(f"  ... and {len(docs) - 20} more")
+        stats = get_content_stats(db_cfg.url, project)
+        samples = get_document_samples(db_cfg.url, project, sample_size, strategy="diverse")
+        click.echo(f"Would sample {len(samples)} of {stats['total_documents']} documents:")
+        for s in samples[:15]:
+            title = s["title"][:60] if s["title"] else "Untitled"
+            click.echo(f"  - {title} ({s['source_type']})")
+        if len(samples) > 15:
+            click.echo(f"  ... and {len(samples) - 15} more")
         return
 
-    # Calculate workers if not specified: floor(docs/5), minimum 1
-    if workers is None:
-        workers = max(1, len(docs) // 5)
+    from .llm.synthesize import synthesize
 
-    # Build config
-    enrich_config = EnrichmentConfig.from_config(
-        {
-            "enabled": config.enrichment_enabled,
-            "version": config.enrichment_version,
-            "extract_todos": config.enrichment_extract_todos,
-            "extract_entities": config.enrichment_extract_entities,
-            "auto_create_todos": config.enrichment_auto_create_todos,
-            "auto_create_entities": config.enrichment_auto_create_entities,
-            "min_confidence_todo": config.enrichment_min_confidence_todo,
-            "min_confidence_entity": config.enrichment_min_confidence_entity,
-        }
-    )
+    try:
+        result = synthesize(
+            db_url=db_cfg.url,
+            project=project,
+            sample_size=sample_size,
+            max_proposals=max_proposals,
+            origin="cli",
+        )
 
-    total_todos = 0
-    total_entities_pending = 0
-    total_entities_created = 0
-    completed = 0
-    errors = 0
+        if not result.proposals:
+            click.echo("No proposals generated. The LLM response could not be parsed.")
+            if result.raw_response:
+                click.echo(f"\nRaw LLM response (first 500 chars):\n{result.raw_response[:500]}")
+            return
 
-    def enrich_one(doc: dict) -> tuple[dict, dict | None, str | None]:
-        """Process a single document. Returns (doc, stats, error)."""
-        proj = doc["metadata"].get("project") if doc["metadata"] else None
-        try:
-            stats = process_enrichment(
-                document_id=str(doc["id"]),
-                source_path=doc["source_path"],
-                title=doc["title"],
-                content=doc["content"],
-                source_type=doc["source_type"],
-                db_url=db_cfg.url,
-                config=enrich_config,
-                project=proj,
-            )
-            return doc, stats, None
-        except Exception as e:
-            return doc, None, str(e)
+        click.echo(f"\nCreated {result.proposals_created} proposals (model: {result.model}):\n")
+        for p in result.proposals:
+            click.echo(f"  - {p['title']}")
+            click.echo(f"    ID: {p['id']}")
 
-    click.echo(f"Processing with {workers} parallel workers...")
+        click.echo("\nUse 'okb synthesize review' to approve/reject/edit proposals.")
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(enrich_one, doc): doc for doc in docs}
-
-        for future in as_completed(futures):
-            doc, stats, error = future.result()
-            completed += 1
-            title = doc["title"][:40] if doc["title"] else "Untitled"
-
-            if error:
-                errors += 1
-                click.echo(f"[{completed}/{len(docs)}] {title}... -> error: {error[:50]}")
-                continue
-
-            total_todos += stats["todos_created"]
-            total_entities_pending += stats["entities_pending"]
-            total_entities_created += stats["entities_created"]
-
-            parts = []
-            if stats["todos_created"]:
-                parts.append(f"{stats['todos_created']} TODOs")
-            if stats["entities_pending"]:
-                parts.append(f"{stats['entities_pending']} pending")
-            if stats["entities_created"]:
-                parts.append(f"{stats['entities_created']} entities")
-            if parts:
-                click.echo(f"[{completed}/{len(docs)}] {title}... -> {', '.join(parts)}")
-            else:
-                click.echo(f"[{completed}/{len(docs)}] {title}... -> nothing extracted")
-
-    click.echo("")
-    click.echo("Summary:")
-    click.echo(f"  Documents processed: {len(docs)}")
-    if errors:
-        click.echo(f"  Errors: {errors}")
-    click.echo(f"  TODOs created: {total_todos}")
-    click.echo(f"  Entities pending review: {total_entities_pending}")
-    click.echo(f"  Entities auto-created: {total_entities_created}")
+    except Exception as e:
+        click.echo(f"Error during synthesis: {e}", err=True)
+        ctx.exit(1)
 
 
-@enrich.command("pending")
+@synthesize.command("pending")
 @click.option("--db", "database", default=None, help="Database to check")
-@click.option("--type", "entity_type", default=None, help="Filter by entity type")
-@click.option("--limit", default=50, help="Maximum results")
+@click.option("--project", default=None, help="Filter by project")
 @click.pass_context
-def enrich_pending(ctx, database: str | None, entity_type: str | None, limit: int):
-    """List pending entity suggestions awaiting review.
+def synthesize_pending(ctx, database: str | None, project: str | None):
+    """List pending synthesis proposals.
 
-    Shows entities extracted from documents that need approval before
-    becoming searchable. Use 'okb enrich approve' or 'okb enrich reject'
-    to process them.
+    Shows proposals awaiting review. Use 'okb synthesize review' for
+    interactive approval, or approve/reject individually.
     """
-    from .llm.enrich import list_pending_entities
+    from .llm.synthesize import list_pending_synthesis
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
 
-    entities = list_pending_entities(db_cfg.url, entity_type=entity_type, limit=limit)
+    proposals = list_pending_synthesis(db_cfg.url, project=project)
 
-    if not entities:
-        click.echo("No pending entity suggestions.")
+    if not proposals:
+        click.echo("No pending synthesis proposals.")
         return
 
-    click.echo(f"Pending entities ({len(entities)}):\n")
-    for e in entities:
-        confidence = e.get("confidence", 0)
-        confidence_str = f" ({confidence:.0%})" if confidence else ""
-        click.echo(f"  [{e['entity_type']}] {e['entity_name']}{confidence_str}")
-        click.echo(f"    ID: {e['id']}")
-        if e.get("description"):
-            desc = (
-                e["description"][:60] + "..."
-                if len(e.get("description", "")) > 60
-                else e["description"]
-            )
-            click.echo(f"    {desc}")
-        if e.get("aliases"):
-            click.echo(f"    Aliases: {', '.join(e['aliases'][:3])}")
-        click.echo(f"    Source: {e['source_title']}")
+    click.echo(f"Pending proposals ({len(proposals)}):\n")
+    for p in proposals:
+        click.echo(f"  {p['title']}")
+        click.echo(f"    ID: {p['id']}")
+        excerpt = p.get("excerpt", "")
+        if excerpt:
+            click.echo(f"    {excerpt}...")
+        click.echo(f"    Model: {p['model']} | Origin: {p['origin']}")
         click.echo("")
 
-    click.echo("Use 'okb enrich approve <id>' or 'okb enrich reject <id>' to process.")
+    click.echo("Use 'okb synthesize review' or 'okb synthesize approve <id>' to process.")
 
 
-@enrich.command("approve")
+@synthesize.command("approve")
 @click.argument("pending_id")
 @click.option("--db", "database", default=None, help="Database")
-@click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
+@click.option("--title", default=None, help="Override title")
+@click.option("--content", default=None, help="Override content")
 @click.pass_context
-def enrich_approve(ctx, pending_id: str, database: str | None, local: bool):
-    """Approve a pending entity, creating it as a searchable document."""
-    from .llm.enrich import approve_entity
+def synthesize_approve(
+    ctx, pending_id: str, database: str | None, title: str | None, content: str | None
+):
+    """Approve a pending synthesis proposal, creating a searchable document."""
+    from .llm.synthesize import approve_synthesis
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
 
-    source_path = approve_entity(db_cfg.url, pending_id, use_modal=not local)
+    source_path = approve_synthesis(db_cfg.url, pending_id, title=title, content=content)
     if source_path:
-        click.echo(f"Entity approved and created: {source_path}")
+        click.echo(f"Synthesis approved and created: {source_path}")
     else:
-        click.echo("Failed to approve entity. ID may be invalid or already processed.", err=True)
+        click.echo("Failed to approve. ID may be invalid or already processed.", err=True)
         sys.exit(1)
 
 
-@enrich.command("reject")
+@synthesize.command("reject")
 @click.argument("pending_id")
 @click.option("--db", "database", default=None, help="Database")
 @click.pass_context
-def enrich_reject(ctx, pending_id: str, database: str | None):
-    """Reject a pending entity suggestion."""
-    from .llm.enrich import reject_entity
+def synthesize_reject(ctx, pending_id: str, database: str | None):
+    """Reject a pending synthesis proposal."""
+    from .llm.synthesize import reject_synthesis
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
 
-    if reject_entity(db_cfg.url, pending_id):
-        click.echo("Entity rejected.")
+    if reject_synthesis(db_cfg.url, pending_id):
+        click.echo("Synthesis proposal rejected.")
     else:
-        click.echo("Failed to reject entity. ID may be invalid or already processed.", err=True)
+        click.echo("Failed to reject. ID may be invalid or already processed.", err=True)
         sys.exit(1)
 
 
-@enrich.command("analyze")
+@synthesize.command("review")
+@click.option("--db", "database", default=None, help="Database to review")
+@click.option("--project", default=None, help="Filter by project")
+@click.option("--wait/--no-wait", default=True, help="Wait for embeddings to complete")
+@click.pass_context
+def synthesize_review(ctx, database: str | None, project: str | None, wait: bool):
+    """Interactive review of pending synthesis proposals.
+
+    Loops through proposals with approve/edit/reject/skip prompts.
+    Press Q to quit early - remaining items stay pending for later.
+
+    Approvals run asynchronously - you can continue reviewing while
+    embeddings are generated. Use --no-wait to exit immediately.
+
+    Examples:
+
+        okb synthesize review              # Review all pending
+
+        okb synthesize review --project x  # Review specific project
+    """
+    from .llm.synthesize import (
+        approve_synthesis_async,
+        get_pending_synthesis,
+        list_pending_synthesis,
+        reject_synthesis,
+        shutdown_executor,
+        update_pending_synthesis,
+    )
+
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    proposals = list_pending_synthesis(db_cfg.url, project=project, limit=100)
+
+    if not proposals:
+        click.echo("No pending synthesis proposals to review.")
+        return
+
+    click.echo(f"Pending: {len(proposals)} proposals")
+    click.echo("")
+
+    approved = 0
+    rejected = 0
+    skipped = 0
+    pending_futures: list[tuple] = []
+
+    for i, p in enumerate(proposals, 1):
+        # Check for completed futures
+        done_count = sum(1 for f, _ in pending_futures if f.done())
+        if pending_futures and done_count > 0:
+            total = len(pending_futures)
+            click.echo(click.style(f"  ({done_count}/{total} embeddings done)", dim=True))
+
+        # Get full content for display
+        full = get_pending_synthesis(db_cfg.url, str(p["id"]))
+        if not full or full["status"] != "pending":
+            continue
+
+        click.echo(click.style(f"=== Proposal [{i}/{len(proposals)}] ===", bold=True))
+        click.echo(f"Title: {click.style(full['title'], fg='cyan')}")
+        click.echo(f"Model: {full['model']}")
+        click.echo("")
+        # Show content preview (first ~300 chars)
+        content_preview = full["content"][:300]
+        if len(full["content"]) > 300:
+            content_preview += "..."
+        click.echo(content_preview)
+        click.echo("")
+
+        choice = click.prompt(
+            "[A]pprove  [E]dit  [R]eject  [S]kip  [Q]uit",
+            type=click.Choice(["A", "E", "R", "S", "Q", "a", "e", "r", "s", "q"]),
+            show_choices=False,
+        ).upper()
+
+        if choice == "Q":
+            click.echo("Quitting review...")
+            break
+        elif choice == "E":
+            # Open in editor
+            edited_text = f"# {full['title']}\n\n{full['content']}"
+            result = click.edit(edited_text)
+            if result:
+                # Parse: first line (after #) is title, rest is content
+                lines = result.strip().split("\n")
+                new_title = lines[0].lstrip("# ").strip() if lines else full["title"]
+                new_content = "\n".join(lines[1:]).strip() if len(lines) > 1 else full["content"]
+                if new_title and new_content:
+                    update_pending_synthesis(
+                        db_cfg.url, str(full["id"]),
+                        title=new_title, content=new_content,
+                    )
+                    click.echo(click.style("Updated. Approving...", fg="cyan"))
+                    future = approve_synthesis_async(
+                        db_cfg.url, str(full["id"]),
+                        title=new_title, content=new_content,
+                    )
+                    pending_futures.append((future, new_title))
+                    approved += 1
+                else:
+                    click.echo("Edit was empty, skipping.")
+                    skipped += 1
+            else:
+                click.echo("No changes, skipping.")
+                skipped += 1
+        elif choice == "A":
+            future = approve_synthesis_async(db_cfg.url, str(full["id"]))
+            pending_futures.append((future, full["title"]))
+            click.echo(click.style("Queued for approval", fg="cyan"))
+            approved += 1
+        elif choice == "R":
+            if reject_synthesis(db_cfg.url, str(full["id"])):
+                click.echo(click.style("Rejected", fg="yellow"))
+                rejected += 1
+            else:
+                click.echo(click.style("Failed to reject", fg="red"))
+        else:
+            click.echo("Skipped")
+            skipped += 1
+
+        click.echo("")
+
+    # Wait for pending approvals
+    if pending_futures:
+        if wait:
+            click.echo(f"Waiting for {len(pending_futures)} pending approvals...")
+            succeeded = 0
+            failed = 0
+            for future, title in pending_futures:
+                try:
+                    result = future.result(timeout=120)
+                    if result:
+                        click.echo(click.style(f"  Created: {title}", fg="green"))
+                        succeeded += 1
+                    else:
+                        click.echo(click.style(f"  Failed: {title}", fg="red"))
+                        failed += 1
+                except Exception as e:
+                    click.echo(click.style(f"  Error: {title}: {e}", fg="red"))
+                    failed += 1
+            click.echo(f"Embeddings: {succeeded} succeeded, {failed} failed")
+        else:
+            done_count = sum(1 for f, _ in pending_futures if f.done())
+            pending_count = len(pending_futures) - done_count
+            if pending_count > 0:
+                click.echo(f"{pending_count} embeddings still processing in background...")
+
+    shutdown_executor(wait=wait)
+
+    click.echo("")
+    click.echo(click.style("Review complete:", bold=True))
+    click.echo(f"  {click.style(str(approved), fg='green')} approved")
+    click.echo(f"  {click.style(str(rejected), fg='yellow')} rejected")
+    click.echo(f"  {skipped} skipped")
+
+
+@synthesize.command("analyze")
 @click.option("--db", "database", default=None, help="Database to analyze")
 @click.option("--project", default=None, help="Analyze specific project only")
 @click.option("--sample-size", default=15, help="Number of documents to sample")
 @click.option("--no-update", is_flag=True, help="Don't update database metadata")
 @click.option("--stats-only", is_flag=True, help="Show stats without LLM analysis")
 @click.pass_context
-def enrich_analyze(
+def synthesize_analyze(
     ctx,
     database: str | None,
     project: str | None,
@@ -1962,25 +2014,20 @@ def enrich_analyze(
 ):
     """Analyze knowledge base and update description/topics.
 
-    Uses entity aggregation and document sampling to understand the overall
-    content and themes in the knowledge base. Generates a description and
-    topic keywords using LLM analysis.
+    Uses document sampling to understand the overall content and themes.
+    Generates a description and topic keywords using LLM analysis.
 
     Examples:
 
-        okb enrich analyze              # Analyze entire database
+        okb synthesize analyze              # Analyze entire database
 
-        okb enrich analyze --stats-only # Show stats without LLM call
+        okb synthesize analyze --stats-only # Show stats without LLM call
 
-        okb enrich analyze --project myproject  # Analyze specific project
+        okb synthesize analyze --project p  # Analyze specific project
 
-        okb enrich analyze --no-update  # Analyze without updating metadata
+        okb synthesize analyze --no-update  # Analyze without updating metadata
     """
-    from .llm.analyze import (
-        analyze_database,
-        get_content_stats,
-        get_entity_summary,
-    )
+    from .llm.analyze import analyze_database, get_content_stats
 
     db_name = database or ctx.obj.get("database")
     db_cfg = config.get_database(db_name)
@@ -1988,18 +2035,14 @@ def enrich_analyze(
     scope = f"project '{project}'" if project else f"database '{db_cfg.name}'"
     click.echo(f"Analyzing {scope}...\n")
 
-    # Always get stats
     stats = get_content_stats(db_cfg.url, project)
-    entities = get_entity_summary(db_cfg.url, project, limit=20)
 
-    # Show stats
     click.echo("Content Statistics:")
     click.echo(f"  Documents: {stats['total_documents']:,}")
     click.echo(f"  Tokens: ~{stats['total_tokens']:,}")
     if stats["source_types"]:
         sorted_types = sorted(stats["source_types"].items(), key=lambda x: -x[1])
         types_parts = [f"{t}: {c}" for t, c in sorted_types]
-        # Break into multiple lines if many types
         if len(types_parts) > 4:
             click.echo("  Source types:")
             for tp in types_parts:
@@ -2012,36 +2055,16 @@ def enrich_analyze(
         earliest = stats["date_range"]["earliest"]
         latest = stats["date_range"]["latest"]
         click.echo(f"  Date range: {earliest} to {latest}")
-
     click.echo("")
-
-    # Show top entities
-    if entities:
-        click.echo("Top Entities (by mentions):")
-        for i, e in enumerate(entities[:10], 1):
-            name, etype = e["name"], e["type"]
-            refs, docs = e["ref_count"], e["doc_count"]
-            click.echo(f"  {i}. {name} ({etype}) - {refs} mentions in {docs} docs")
-        click.echo("")
-    else:
-        click.echo("No entities extracted yet.")
-        click.echo("Run 'okb enrich run' to extract entities from documents.\n")
 
     if stats_only:
         return
 
-    # Check LLM is configured
     from .llm import get_llm
 
     if get_llm() is None:
         click.echo("Error: No LLM provider configured.", err=True)
-        click.echo("", err=True)
-        click.echo("Analysis requires an LLM to generate description and topics.", err=True)
-        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml:", err=True)
-        click.echo("", err=True)
-        click.echo("  llm:", err=True)
-        click.echo("    provider: claude", err=True)
-        click.echo("", err=True)
+        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml", err=True)
         click.echo("Use --stats-only to see statistics without LLM analysis.", err=True)
         ctx.exit(1)
 
@@ -2071,639 +2094,6 @@ def enrich_analyze(
     except Exception as e:
         click.echo(f"Error during analysis: {e}", err=True)
         ctx.exit(1)
-
-
-@enrich.command("consolidate")
-@click.option("--db", "database", default=None, help="Database to consolidate")
-@click.option("--duplicates/--no-duplicates", "detect_duplicates", default=True,
-              help="Detect duplicate entities")
-@click.option("--cross-doc/--no-cross-doc", "detect_cross_doc", default=True,
-              help="Detect cross-document entities")
-@click.option("--clusters/--no-clusters", "build_clusters", default=True,
-              help="Build topic clusters")
-@click.option("--relationships/--no-relationships", "extract_relationships", default=True,
-              help="Extract entity relationships")
-@click.option("--dry-run", is_flag=True, help="Show what would be found without creating proposals")
-@click.pass_context
-def enrich_consolidate(
-    ctx,
-    database: str | None,
-    detect_duplicates: bool,
-    detect_cross_doc: bool,
-    build_clusters: bool,
-    extract_relationships: bool,
-    dry_run: bool,
-):
-    """Run entity consolidation pipeline.
-
-    Detects duplicate entities, cross-document mentions, builds topic clusters,
-    and extracts entity relationships. Creates pending proposals for review
-    rather than auto-applying changes.
-
-    Examples:
-
-        okb enrich consolidate              # Run full consolidation
-
-        okb enrich consolidate --dry-run    # Show what would be found
-
-        okb enrich consolidate --no-clusters  # Skip clustering
-
-        okb enrich consolidate --duplicates --no-cross-doc --no-clusters --no-relationships
-    """
-    from .llm import get_llm
-    from .llm.consolidate import format_consolidation_result, run_consolidation
-
-    # Check LLM is configured if needed
-    if get_llm() is None:
-        click.echo("Error: No LLM provider configured.", err=True)
-        click.echo("Consolidation requires an LLM for deduplication and clustering.", err=True)
-        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml", err=True)
-        ctx.exit(1)
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    click.echo(f"Running consolidation on database '{db_cfg.name}'...")
-    if dry_run:
-        click.echo("(dry run - no proposals will be created)")
-
-    result = run_consolidation(
-        db_url=db_cfg.url,
-        detect_duplicates=detect_duplicates,
-        detect_cross_doc=detect_cross_doc,
-        build_clusters=build_clusters,
-        extract_relationships=extract_relationships,
-        dry_run=dry_run,
-    )
-
-    # Format and display result
-    output = format_consolidation_result(result)
-    click.echo("")
-    click.echo(output)
-
-    if not dry_run and (result.duplicates_found > 0 or result.cross_doc_candidates > 0):
-        click.echo("")
-        click.echo("Use 'okb enrich merge-proposals' to review pending merges.")
-
-
-@enrich.command("merge-proposals")
-@click.option("--db", "database", default=None, help="Database to check")
-@click.option("--limit", default=50, help="Maximum results")
-@click.pass_context
-def enrich_merge_proposals(ctx, database: str | None, limit: int):
-    """List pending entity merge proposals.
-
-    Shows duplicate entities and cross-document mentions awaiting review.
-    Use 'okb enrich approve-merge' or 'okb enrich reject-merge' to process.
-    """
-    from .llm.extractors.dedup import list_pending_merges
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    merges = list_pending_merges(db_cfg.url, limit=limit)
-
-    if not merges:
-        click.echo("No pending merge proposals.")
-        return
-
-    click.echo(f"Pending merge proposals ({len(merges)}):\n")
-    for m in merges:
-        confidence = m.get("confidence", 0)
-        confidence_str = f" ({confidence:.0%})" if confidence else ""
-        click.echo(f"  {m['canonical_name']} <- {m['duplicate_name']}{confidence_str}")
-        click.echo(f"    ID: {m['id']}")
-        click.echo(f"    Reason: {m.get('reason', 'similarity')}")
-        click.echo("")
-
-    click.echo("Use 'okb enrich approve-merge <id>' or 'okb enrich reject-merge <id>' to process.")
-
-
-@enrich.command("approve-merge")
-@click.argument("merge_id")
-@click.option("--db", "database", default=None, help="Database")
-@click.pass_context
-def enrich_approve_merge(ctx, merge_id: str, database: str | None):
-    """Approve a pending entity merge.
-
-    Merges the duplicate entity into the canonical entity:
-    - Redirects all entity references from duplicate to canonical
-    - Adds duplicate's name as an alias for canonical
-    - Deletes the duplicate entity document
-    """
-    from .llm.extractors.dedup import approve_merge
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    if approve_merge(db_cfg.url, merge_id):
-        click.echo("Merge approved and executed.")
-    else:
-        click.echo("Failed to approve merge. ID may be invalid or already processed.", err=True)
-        sys.exit(1)
-
-
-@enrich.command("reject-merge")
-@click.argument("merge_id")
-@click.option("--db", "database", default=None, help="Database")
-@click.pass_context
-def enrich_reject_merge(ctx, merge_id: str, database: str | None):
-    """Reject a pending entity merge proposal."""
-    from .llm.extractors.dedup import reject_merge
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    if reject_merge(db_cfg.url, merge_id):
-        click.echo("Merge rejected.")
-    else:
-        click.echo("Failed to reject merge. ID may be invalid or already processed.", err=True)
-        sys.exit(1)
-
-
-@enrich.command("clusters")
-@click.option("--db", "database", default=None, help="Database to check")
-@click.option("--limit", default=20, help="Maximum clusters to show")
-@click.pass_context
-def enrich_clusters(ctx, database: str | None, limit: int):
-    """List topic clusters.
-
-    Shows groups of related entities and documents organized by theme.
-    """
-    from .llm.consolidate import get_topic_clusters
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    clusters = get_topic_clusters(db_cfg.url, limit=limit)
-
-    if not clusters:
-        click.echo("No topic clusters found.")
-        click.echo("Run 'okb enrich consolidate' to generate clusters.")
-        return
-
-    click.echo(f"Topic clusters ({len(clusters)}):\n")
-    for c in clusters:
-        click.echo(f"  {c['name']}")
-        if c.get("description"):
-            desc = c["description"][:70] + "..." if len(c["description"]) > 70 else c["description"]
-            click.echo(f"    {desc}")
-        click.echo(f"    Members: {c['member_count']} entities/documents")
-        if c.get("sample_members"):
-            samples = ", ".join(c["sample_members"][:5])
-            click.echo(f"    Examples: {samples}")
-        click.echo("")
-
-
-@enrich.command("relationships")
-@click.option("--db", "database", default=None, help="Database to check")
-@click.option("--entity", "entity_name", default=None, help="Filter to specific entity")
-@click.option("--type", "relationship_type", default=None,
-              help="Filter by relationship type (works_for, uses, belongs_to, related_to)")
-@click.option("--limit", default=50, help="Maximum results")
-@click.pass_context
-def enrich_relationships(
-    ctx,
-    database: str | None,
-    entity_name: str | None,
-    relationship_type: str | None,
-    limit: int,
-):
-    """List entity relationships.
-
-    Shows connections between entities (person→org, tech→project, etc.).
-
-    Examples:
-
-        okb enrich relationships                    # All relationships
-
-        okb enrich relationships --entity "Django"  # Filter to one entity
-
-        okb enrich relationships --type works_for   # Filter by type
-    """
-    from .llm.consolidate import get_entity_relationships
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    relationships = get_entity_relationships(
-        db_cfg.url,
-        entity_name=entity_name,
-        relationship_type=relationship_type,
-        limit=limit,
-    )
-
-    if not relationships:
-        if entity_name:
-            click.echo(f"No relationships found for entity '{entity_name}'.")
-        else:
-            click.echo("No relationships found.")
-            click.echo("Run 'okb enrich consolidate' to extract relationships.")
-        return
-
-    click.echo(f"Entity relationships ({len(relationships)}):\n")
-    for r in relationships:
-        confidence = r.get("confidence", 0)
-        conf_str = f" ({confidence:.0%})" if confidence else ""
-        click.echo(f"  {r['source_name']} --[{r['relationship_type']}]--> {r['target_name']}{conf_str}")
-        if r.get("evidence"):
-            evidence = r["evidence"][:60] + "..." if len(r["evidence"]) > 60 else r["evidence"]
-            click.echo(f"    Evidence: {evidence}")
-    click.echo("")
-
-
-@enrich.command("all")
-@click.option("--db", "database", default=None, help="Database to enrich")
-@click.option("--source-type", default=None, help="Filter by source type")
-@click.option("--project", default=None, help="Filter by project")
-@click.option("--query", default=None, help="Semantic search query to filter documents")
-@click.option("--path-pattern", default=None, help="SQL LIKE pattern for source_path")
-@click.option("--limit", default=100, help="Maximum documents to process")
-@click.option("--workers", default=None, type=int, help="Parallel workers (default: docs/5, min 1)")
-@click.option("--dry-run", is_flag=True, help="Show what would be done without executing")
-@click.option("--skip-consolidate", is_flag=True, help="Skip consolidation phase")
-@click.option("--duplicates/--no-duplicates", "detect_duplicates", default=True,
-              help="Detect duplicate entities during consolidation")
-@click.option("--clusters/--no-clusters", "build_clusters", default=True,
-              help="Build topic clusters during consolidation")
-@click.option("--relationships/--no-relationships", "extract_relationships", default=True,
-              help="Extract entity relationships during consolidation")
-@click.pass_context
-def enrich_all(
-    ctx,
-    database: str | None,
-    source_type: str | None,
-    project: str | None,
-    query: str | None,
-    path_pattern: str | None,
-    limit: int,
-    workers: int | None,
-    dry_run: bool,
-    skip_consolidate: bool,
-    detect_duplicates: bool,
-    build_clusters: bool,
-    extract_relationships: bool,
-):
-    """Run full enrichment pipeline: extraction + consolidation.
-
-    Combines 'enrich run' and 'enrich consolidate' in one command for
-    one-shot enrichment of documents.
-
-    Examples:
-
-        okb enrich all                          # Run full pipeline
-
-        okb enrich all --dry-run                # Preview what would happen
-
-        okb enrich all --skip-consolidate       # Run extraction only
-
-        okb enrich all --source-type markdown   # Filter to markdown files
-
-        okb enrich all --no-clusters            # Skip cluster building
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    from .llm import get_llm
-    from .llm.consolidate import format_consolidation_result, run_consolidation
-    from .llm.enrich import EnrichmentConfig, get_unenriched_documents, process_enrichment
-
-    # Check LLM is configured
-    if get_llm() is None:
-        click.echo("Error: No LLM provider configured.", err=True)
-        click.echo("Set ANTHROPIC_API_KEY or configure in ~/.config/okb/config.yaml", err=True)
-        ctx.exit(1)
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-
-    # Phase 1: Enrichment
-    click.echo("=== Phase 1: Enrichment ===")
-    click.echo(f"Scanning database '{db_cfg.name}' for documents to enrich...")
-    if dry_run:
-        click.echo("(dry run - no changes will be made)")
-
-    docs = get_unenriched_documents(
-        db_url=db_cfg.url,
-        source_type=source_type,
-        project=project,
-        query=query,
-        path_pattern=path_pattern,
-        limit=limit,
-    )
-
-    total_todos = 0
-    total_entities_pending = 0
-    total_entities_created = 0
-
-    if not docs:
-        click.echo("No documents need enrichment.")
-    else:
-        click.echo(f"Found {len(docs)} documents to enrich")
-
-        if dry_run:
-            for doc in docs[:20]:
-                click.echo(f"  - {doc['title']} ({doc['source_type']})")
-            if len(docs) > 20:
-                click.echo(f"  ... and {len(docs) - 20} more")
-        else:
-            # Build config
-            enrich_config = EnrichmentConfig.from_config(
-                {
-                    "enabled": config.enrichment_enabled,
-                    "version": config.enrichment_version,
-                    "extract_todos": config.enrichment_extract_todos,
-                    "extract_entities": config.enrichment_extract_entities,
-                    "auto_create_todos": config.enrichment_auto_create_todos,
-                    "auto_create_entities": config.enrichment_auto_create_entities,
-                    "min_confidence_todo": config.enrichment_min_confidence_todo,
-                    "min_confidence_entity": config.enrichment_min_confidence_entity,
-                }
-            )
-
-            # Calculate workers
-            if workers is None:
-                workers = max(1, len(docs) // 5)
-
-            completed = 0
-            errors = 0
-
-            def enrich_one(doc: dict) -> tuple[dict, dict | None, str | None]:
-                proj = doc["metadata"].get("project") if doc["metadata"] else None
-                try:
-                    stats = process_enrichment(
-                        document_id=str(doc["id"]),
-                        source_path=doc["source_path"],
-                        title=doc["title"],
-                        content=doc["content"],
-                        source_type=doc["source_type"],
-                        db_url=db_cfg.url,
-                        config=enrich_config,
-                        project=proj,
-                    )
-                    return doc, stats, None
-                except Exception as e:
-                    return doc, None, str(e)
-
-            click.echo(f"Processing with {workers} parallel workers...")
-
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {executor.submit(enrich_one, doc): doc for doc in docs}
-
-                for future in as_completed(futures):
-                    doc, stats, error = future.result()
-                    completed += 1
-                    title = doc["title"][:40] if doc["title"] else "Untitled"
-
-                    if error:
-                        errors += 1
-                        click.echo(f"[{completed}/{len(docs)}] {title}... -> error: {error[:50]}")
-                        continue
-
-                    total_todos += stats["todos_created"]
-                    total_entities_pending += stats["entities_pending"]
-                    total_entities_created += stats["entities_created"]
-
-                    parts = []
-                    if stats["todos_created"]:
-                        parts.append(f"{stats['todos_created']} TODOs")
-                    if stats["entities_pending"]:
-                        parts.append(f"{stats['entities_pending']} pending")
-                    if stats["entities_created"]:
-                        parts.append(f"{stats['entities_created']} entities")
-                    if parts:
-                        click.echo(f"[{completed}/{len(docs)}] {title}... -> {', '.join(parts)}")
-                    else:
-                        click.echo(f"[{completed}/{len(docs)}] {title}... -> nothing extracted")
-
-            click.echo("")
-            click.echo("Enrichment summary:")
-            click.echo(f"  Documents processed: {len(docs)}")
-            if errors:
-                click.echo(f"  Errors: {errors}")
-            click.echo(f"  TODOs created: {total_todos}")
-            click.echo(f"  Entities pending review: {total_entities_pending}")
-            click.echo(f"  Entities auto-created: {total_entities_created}")
-
-    # Phase 2: Consolidation
-    if skip_consolidate:
-        click.echo("")
-        click.echo("Skipping consolidation (--skip-consolidate)")
-        return
-
-    click.echo("")
-    click.echo("=== Phase 2: Consolidation ===")
-
-    result = run_consolidation(
-        db_url=db_cfg.url,
-        detect_duplicates=detect_duplicates,
-        detect_cross_doc=True,
-        build_clusters=build_clusters,
-        extract_relationships=extract_relationships,
-        dry_run=dry_run,
-    )
-
-    output = format_consolidation_result(result)
-    click.echo(output)
-
-    if not dry_run and (result.duplicates_found > 0 or result.cross_doc_candidates > 0):
-        click.echo("")
-        click.echo("Use 'okb enrich review' to review pending entities and merges.")
-
-
-@enrich.command("review")
-@click.option("--db", "database", default=None, help="Database to review")
-@click.option("--entities-only", is_flag=True, help="Only review pending entities")
-@click.option("--merges-only", is_flag=True, help="Only review pending merges")
-@click.option("--local", is_flag=True, help="Use local CPU embedding instead of Modal")
-@click.option("--wait/--no-wait", default=True, help="Wait for embeddings to complete")
-@click.pass_context
-def enrich_review(
-    ctx, database: str | None, entities_only: bool, merges_only: bool, local: bool, wait: bool
-):
-    """Interactive review of pending entities and merge proposals.
-
-    Loops through pending items with approve/reject prompts.
-    Press Q to quit early - remaining items stay pending for later.
-
-    Entity approvals run asynchronously - you can continue reviewing while
-    embeddings are generated. Use --no-wait to exit immediately after reviewing.
-
-    Examples:
-
-        okb enrich review                    # Review all pending items
-
-        okb enrich review --entities-only    # Only review entities
-
-        okb enrich review --merges-only      # Only review merges
-
-        okb enrich review --local            # Use local CPU embedding
-
-        okb enrich review --no-wait          # Don't wait for embeddings
-    """
-
-    from .llm.enrich import (
-        approve_entity_async,
-        list_pending_entities,
-        reject_entity,
-        shutdown_executor,
-    )
-    from .llm.extractors.dedup import approve_merge, list_pending_merges, reject_merge
-
-    db_name = database or ctx.obj.get("database")
-    db_cfg = config.get_database(db_name)
-    use_modal = not local
-
-    # Get pending items
-    entities = [] if merges_only else list_pending_entities(db_cfg.url, limit=100)
-    merges = [] if entities_only else list_pending_merges(db_cfg.url, limit=100)
-
-    if not entities and not merges:
-        click.echo("No pending items to review.")
-        return
-
-    click.echo(f"Pending: {len(entities)} entities, {len(merges)} merges")
-    click.echo("")
-
-    # Counters
-    approved = 0
-    rejected = 0
-    skipped = 0
-
-    # Track async approval futures
-    pending_futures: list[tuple] = []  # (future, entity_name)
-
-    # Review entities
-    choice = None
-    if entities and not merges_only:
-        for i, e in enumerate(entities, 1):
-            # Check for completed futures
-            done_count = sum(1 for f, _ in pending_futures if f.done())
-            if pending_futures and done_count > 0:
-                total = len(pending_futures)
-                click.echo(click.style(f"  ({done_count}/{total} embeddings done)", dim=True))
-
-            click.echo(click.style(f"=== Entity Review [{i}/{len(entities)}] ===", bold=True))
-            click.echo(f"Name: {click.style(e['entity_name'], fg='cyan')}")
-            click.echo(f"Type: {e['entity_type']}")
-            confidence = e.get("confidence", 0)
-            if confidence:
-                click.echo(f"Confidence: {confidence:.0%}")
-            if e.get("description"):
-                d = e["description"]
-                desc = d[:80] + "..." if len(d) > 80 else d
-                click.echo(f"Description: {desc}")
-            if e.get("aliases"):
-                click.echo(f"Aliases: {', '.join(e['aliases'][:5])}")
-            click.echo(f"Source: {e['source_title']}")
-            click.echo("")
-
-            choice = click.prompt(
-                "[A]pprove  [R]eject  [S]kip  [Q]uit",
-                type=click.Choice(["A", "R", "S", "Q", "a", "r", "s", "q"]),
-                show_choices=False,
-            ).upper()
-
-            if choice == "Q":
-                click.echo("Quitting review...")
-                break
-            elif choice == "A":
-                # Submit async approval
-                future = approve_entity_async(db_cfg.url, str(e["id"]), use_modal)
-                pending_futures.append((future, e["entity_name"]))
-                click.echo(click.style("⏳ Queued for approval", fg="cyan"))
-                approved += 1
-            elif choice == "R":
-                if reject_entity(db_cfg.url, str(e["id"])):
-                    click.echo(click.style("✗ Rejected", fg="yellow"))
-                    rejected += 1
-                else:
-                    click.echo(click.style("✗ Failed to reject", fg="red"))
-            else:
-                click.echo("Skipped")
-                skipped += 1
-
-            click.echo("")
-        else:
-            # Completed all entities, continue to merges
-            pass
-
-    # Review merges (only if we didn't quit early)
-    if merges and not entities_only and (not entities or choice != "Q"):
-        for i, m in enumerate(merges, 1):
-            click.echo(click.style(f"=== Merge Review [{i}/{len(merges)}] ===", bold=True))
-            cname = click.style(m["canonical_name"], fg="cyan")
-            ctype = m.get("canonical_type", "unknown")
-            click.echo(f"Canonical: {cname} ({ctype})")
-            dname = click.style(m["duplicate_name"], fg="yellow")
-            dtype = m.get("duplicate_type", "unknown")
-            click.echo(f"Duplicate: {dname} ({dtype})")
-            confidence = m.get("confidence", 0)
-            if confidence:
-                click.echo(f"Confidence: {confidence:.0%}")
-            click.echo(f"Reason: {m.get('reason', 'similarity')}")
-            click.echo("")
-
-            choice = click.prompt(
-                "[A]pprove  [R]eject  [S]kip  [Q]uit",
-                type=click.Choice(["A", "R", "S", "Q", "a", "r", "s", "q"]),
-                show_choices=False,
-            ).upper()
-
-            if choice == "Q":
-                click.echo("Quitting review...")
-                break
-            elif choice == "A":
-                if approve_merge(db_cfg.url, str(m["id"])):
-                    click.echo(click.style("✓ Merged", fg="green"))
-                    approved += 1
-                else:
-                    click.echo(click.style("✗ Failed to merge", fg="red"))
-            elif choice == "R":
-                if reject_merge(db_cfg.url, str(m["id"])):
-                    click.echo(click.style("✗ Rejected", fg="yellow"))
-                    rejected += 1
-                else:
-                    click.echo(click.style("✗ Failed to reject", fg="red"))
-            else:
-                click.echo("Skipped")
-                skipped += 1
-
-            click.echo("")
-
-    # Wait for pending approvals if requested
-    if pending_futures:
-        if wait:
-            click.echo(f"Waiting for {len(pending_futures)} pending approvals...")
-            succeeded = 0
-            failed = 0
-            for future, name in pending_futures:
-                try:
-                    result = future.result(timeout=120)
-                    if result:
-                        click.echo(click.style(f"  ✓ {name}", fg="green"))
-                        succeeded += 1
-                    else:
-                        click.echo(click.style(f"  ✗ {name} failed", fg="red"))
-                        failed += 1
-                except Exception as e:
-                    click.echo(click.style(f"  ✗ {name}: {e}", fg="red"))
-                    failed += 1
-            click.echo(f"Embeddings: {succeeded} succeeded, {failed} failed")
-        else:
-            done_count = sum(1 for f, _ in pending_futures if f.done())
-            pending_count = len(pending_futures) - done_count
-            if pending_count > 0:
-                click.echo(f"{pending_count} embeddings still processing in background...")
-
-    # Cleanup executor
-    shutdown_executor(wait=wait)
-
-    # Summary
-    click.echo("")
-    click.echo(click.style("Review complete:", bold=True))
-    click.echo(f"  {click.style(str(approved), fg='green')} approved")
-    click.echo(f"  {click.style(str(rejected), fg='yellow')} rejected")
-    click.echo(f"  {skipped} skipped")
 
 
 # =============================================================================

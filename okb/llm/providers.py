@@ -93,6 +93,7 @@ class ClaudeProvider:
         prompt: str,
         system: str | None = None,
         max_tokens: int = 1024,
+        timeout: float | None = None,
     ) -> LLMResponse:
         """Generate a completion using Claude.
 
@@ -100,6 +101,7 @@ class ClaudeProvider:
             prompt: The user prompt
             system: Optional system prompt
             max_tokens: Maximum tokens in response
+            timeout: Per-request timeout override in seconds
 
         Returns:
             LLMResponse with generated content
@@ -115,6 +117,10 @@ class ClaudeProvider:
         }
         if system:
             kwargs["system"] = system
+        if timeout is not None:
+            from httpx import Timeout
+
+            kwargs["timeout"] = Timeout(timeout, connect=10.0)
 
         response = self._client.messages.create(**kwargs)
 
@@ -210,6 +216,7 @@ class ModalProvider:
         prompt: str,
         system: str | None = None,
         max_tokens: int = 256,
+        timeout: float | None = None,
     ) -> LLMResponse:
         """Generate a completion using Modal LLM.
 
@@ -217,6 +224,7 @@ class ModalProvider:
             prompt: The user prompt
             system: Optional system prompt
             max_tokens: Maximum tokens in response
+            timeout: Per-request timeout (not used for Modal, included for interface compat)
 
         Returns:
             LLMResponse with generated content

@@ -404,19 +404,26 @@ class KnowledgeBase:
         content: str,
         tags: list[str] | None = None,
         project: str | None = None,
+        source_type: str = "claude-note",
     ) -> dict:
         """
         Save a piece of knowledge directly from Claude.
 
         Creates a virtual document (not file-backed) with embedding.
+        Args:
+            source_type: 'claude-note' (default) or 'synthesis'
         Returns the saved document info.
         """
         conn = self.get_connection()
 
-        # Generate unique source path for Claude-generated content
+        # Generate unique source path based on type
         knowledge_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        source_path = f"claude://knowledge/{timestamp}-{knowledge_id}"
+        if source_type == "synthesis":
+            source_path = f"okb://synthesis/{timestamp}-{knowledge_id}"
+        else:
+            source_path = f"claude://knowledge/{timestamp}-{knowledge_id}"
+            source_type = "claude-note"
 
         # Build metadata
         metadata = {}
@@ -462,7 +469,7 @@ class KnowledgeBase:
             """,
             (
                 source_path,
-                "claude-note",
+                source_type,
                 title,
                 content,
                 psycopg.types.json.Json(metadata),
@@ -949,135 +956,111 @@ def _list_sync_sources(db_url: str, db_name: str) -> str:
     return "\n".join(lines)
 
 
-def _enrich_document(
+def _synthesize_knowledge(
     db_url: str,
-    source_path: str,
-    extract_todos: bool = True,
-    extract_entities: bool = True,
-    auto_create_entities: bool = False,
-    use_modal: bool = True,
+    project: str | None = None,
+    sample_size: int = 25,
+    max_proposals: int = 10,
 ) -> str:
-    """Run enrichment on a specific document."""
-    from psycopg.rows import dict_row
-
+    """Run synthesis to propose knowledge documents."""
     from .llm import get_llm
-    from .llm.enrich import EnrichmentConfig, process_enrichment
+    from .llm.synthesize import synthesize
 
-    # Check LLM is configured
     if get_llm() is None:
         return (
             "Error: No LLM provider configured. "
-            "Enrichment requires an LLM. Set ANTHROPIC_API_KEY or configure llm.provider in config."
+            "Synthesis requires an LLM. Set ANTHROPIC_API_KEY or configure llm.provider in config."
         )
 
-    with psycopg.connect(db_url, row_factory=dict_row) as conn:
-        doc = conn.execute(
-            "SELECT id, source_path, title, content, source_type, metadata FROM documents WHERE source_path = %s",
-            (source_path,),
-        ).fetchone()
-
-        if not doc:
-            return f"Document not found: {source_path}"
-
-        enrich_config = EnrichmentConfig(
-            extract_todos=extract_todos,
-            extract_entities=extract_entities,
-            auto_create_todos=True,
-            auto_create_entities=auto_create_entities,
-        )
-
-        project = doc["metadata"].get("project") if doc["metadata"] else None
-
-        stats = process_enrichment(
-            document_id=str(doc["id"]),
-            source_path=doc["source_path"],
-            title=doc["title"],
-            content=doc["content"],
-            source_type=doc["source_type"],
+    try:
+        result = synthesize(
             db_url=db_url,
-            config=enrich_config,
             project=project,
-            use_modal=use_modal,
+            sample_size=sample_size,
+            max_proposals=max_proposals,
+            origin="mcp",
         )
 
-    lines = [f"Enriched: {source_path}"]
-    if stats["todos_created"]:
-        lines.append(f"  TODOs created: {stats['todos_created']}")
-    if stats["entities_pending"]:
-        lines.append(f"  Entities pending review: {stats['entities_pending']}")
-    if stats["entities_created"]:
-        lines.append(f"  Entities created: {stats['entities_created']}")
-    if not any(stats.values()):
-        lines.append("  No TODOs or entities extracted")
+        if not result.proposals:
+            return "No proposals generated. The LLM response could not be parsed."
 
-    return "\n".join(lines)
+        lines = [f"Created {result.proposals_created} synthesis proposals:\n"]
+        for p in result.proposals:
+            lines.append(f"- **{p['title']}**")
+            lines.append(f"  ID: `{p['id']}`")
+        lines.append(
+            "\nUse `list_pending_synthesis` to review, "
+            "`approve_synthesis` or `reject_synthesis` to process."
+        )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error during synthesis: {e}"
 
 
-def _list_pending_entities(
+def _list_pending_synthesis(
     db_url: str,
-    entity_type: str | None = None,
-    limit: int = 20,
+    project: str | None = None,
+    limit: int = 50,
 ) -> str:
-    """List pending entity suggestions."""
-    from .llm.enrich import list_pending_entities
+    """List pending synthesis proposals."""
+    from .llm.synthesize import list_pending_synthesis
 
-    entities = list_pending_entities(db_url, entity_type=entity_type, limit=limit)
+    proposals = list_pending_synthesis(db_url, project=project, limit=limit)
 
-    if not entities:
-        return "No pending entity suggestions."
+    if not proposals:
+        return "No pending synthesis proposals."
 
-    lines = ["## Pending Entities\n"]
-    for e in entities:
-        confidence = e.get("confidence", 0)
-        confidence_str = f" ({confidence:.0%})" if confidence else ""
-        lines.append(f"- **{e['entity_name']}** ({e['entity_type']}){confidence_str}")
-        lines.append(f"  ID: `{e['id']}`")
-        if e.get("description"):
-            lines.append(f"  {e['description']}")
-        if e.get("aliases"):
-            lines.append(f"  Aliases: {', '.join(e['aliases'])}")
-        lines.append(f"  Source: {e['source_title']}")
+    lines = ["## Pending Synthesis Proposals\n"]
+    for p in proposals:
+        lines.append(f"- **{p['title']}**")
+        lines.append(f"  ID: `{p['id']}`")
+        excerpt = p.get("excerpt", "")
+        if excerpt:
+            lines.append(f"  {excerpt}...")
+        lines.append(f"  Model: {p['model']} | Origin: {p['origin']}")
         lines.append("")
 
-    lines.append(f"\nUse `approve_entity` or `reject_entity` with the entity ID.")
+    lines.append(f"{len(proposals)} pending proposals.")
+    lines.append("Use `approve_synthesis` or `reject_synthesis` with the proposal ID.")
     return "\n".join(lines)
 
 
-def _approve_entity(
-    db_url: str, pending_id: str, use_modal: bool = True, run_async: bool = False
+def _approve_synthesis(
+    db_url: str,
+    pending_id: str,
+    title: str | None = None,
+    content: str | None = None,
 ) -> str:
-    """Approve a pending entity.
+    """Approve a pending synthesis proposal."""
+    from .llm.synthesize import approve_synthesis
 
-    Args:
-        db_url: Database URL
-        pending_id: ID of the pending entity
-        use_modal: If True, use Modal GPU for embedding; else local CPU
-        run_async: If True, return immediately while embedding happens in background
-    """
-    from .llm.enrich import approve_entity, approve_entity_async
-
-    if run_async:
-        future = approve_entity_async(db_url, pending_id, use_modal)
-        # Return immediately - don't wait for completion
-        return (
-            f"Entity approval queued (ID: {pending_id}). "
-            "Embedding is being generated in the background. "
-            "The entity will be searchable once complete."
-        )
-
-    source_path = approve_entity(db_url, pending_id, use_modal)
+    source_path = approve_synthesis(db_url, pending_id, title=title, content=content)
     if source_path:
-        return f"Entity approved and created: `{source_path}`"
-    return "Failed to approve entity. ID may be invalid or already processed."
+        return f"Synthesis approved and created: `{source_path}`"
+    return "Failed to approve. ID may be invalid or already processed."
 
 
-def _reject_entity(db_url: str, pending_id: str) -> str:
-    """Reject a pending entity."""
-    from .llm.enrich import reject_entity
+def _reject_synthesis(db_url: str, pending_id: str) -> str:
+    """Reject a pending synthesis proposal."""
+    from .llm.synthesize import reject_synthesis
 
-    if reject_entity(db_url, pending_id):
-        return "Entity rejected."
-    return "Failed to reject entity. ID may be invalid or already processed."
+    if reject_synthesis(db_url, pending_id):
+        return "Synthesis proposal rejected."
+    return "Failed to reject. ID may be invalid or already processed."
+
+
+def _edit_pending_synthesis(
+    db_url: str,
+    pending_id: str,
+    title: str | None = None,
+    content: str | None = None,
+) -> str:
+    """Edit a pending synthesis proposal."""
+    from .llm.synthesize import update_pending_synthesis
+
+    if update_pending_synthesis(db_url, pending_id, title=title, content=content):
+        return "Synthesis proposal updated."
+    return "Failed to update. ID may be invalid or already processed."
 
 
 def _analyze_knowledge_base(
@@ -1109,201 +1092,59 @@ def _analyze_knowledge_base(
         return f"Error analyzing knowledge base: {e}"
 
 
-def _find_entity_duplicates(
+def _get_synthesis_samples(
     db_url: str,
-    similarity_threshold: float = 0.85,
-    entity_type: str | None = None,
-    use_llm: bool = True,
+    project: str | None = None,
+    sample_size: int = 20,
+    strategy: str = "diverse",
+    excerpt_length: int = 1500,
 ) -> str:
-    """Find duplicate entities and return formatted result."""
-    from .llm.extractors.dedup import create_pending_merge, find_duplicate_entities
+    """Get document samples formatted for LLM-driven synthesis."""
+    from .llm.analyze import get_content_stats, get_document_samples
 
-    pairs = find_duplicate_entities(
-        db_url,
-        similarity_threshold=similarity_threshold,
-        use_llm=use_llm,
-        entity_type=entity_type,
-    )
+    # Cap parameters
+    sample_size = min(sample_size, 50)
+    excerpt_length = min(excerpt_length, 3000)
 
-    if not pairs:
-        return "No potential duplicate entities found."
-
-    lines = ["## Potential Duplicate Entities\n"]
-    for p in pairs:
-        lines.append(f"- **{p.canonical_name}** ↔ **{p.duplicate_name}**")
-        lines.append(f"  Confidence: {p.confidence:.0%} ({p.reason})")
-        lines.append(f"  Types: {p.canonical_type} / {p.duplicate_type}")
-
-        # Create pending merge
-        merge_id = create_pending_merge(db_url, p)
-        if merge_id:
-            lines.append(f"  Pending merge ID: `{merge_id}`")
-        lines.append("")
-
-    lines.append(f"\nFound {len(pairs)} potential duplicates.")
-    lines.append("Use `approve_merge` or `reject_merge` with merge IDs to process.")
-    return "\n".join(lines)
-
-
-def _merge_entities(db_url: str, canonical_path: str, duplicate_path: str) -> str:
-    """Merge two entities and return result."""
-    from psycopg.rows import dict_row
-
-    from .llm.extractors.dedup import execute_merge
-
-    with psycopg.connect(db_url, row_factory=dict_row) as conn:
-        # Get entity IDs from paths
-        canonical = conn.execute(
-            "SELECT id, title FROM documents WHERE source_path = %s AND source_type = 'entity'",
-            (canonical_path,),
-        ).fetchone()
-        duplicate = conn.execute(
-            "SELECT id, title FROM documents WHERE source_path = %s AND source_type = 'entity'",
-            (duplicate_path,),
-        ).fetchone()
-
-        if not canonical:
-            return f"Error: Canonical entity not found: {canonical_path}"
-        if not duplicate:
-            return f"Error: Duplicate entity not found: {duplicate_path}"
-
-        if execute_merge(db_url, str(canonical["id"]), str(duplicate["id"])):
-            return (
-                f"Merge successful:\n"
-                f"- Kept: {canonical['title']} ({canonical_path})\n"
-                f"- Merged: {duplicate['title']} (deleted, added as alias)"
-            )
-        return "Error: Merge failed."
-
-
-def _list_pending_merges(db_url: str, limit: int = 50) -> str:
-    """List pending entity merges."""
-    from .llm.extractors.dedup import list_pending_merges
-
-    merges = list_pending_merges(db_url, limit=limit)
-
-    if not merges:
-        return "No pending entity merges."
-
-    lines = ["## Pending Entity Merges\n"]
-    for m in merges:
-        lines.append(f"- **{m['canonical_name']}** ← {m['duplicate_name']}")
-        lines.append(f"  ID: `{m['id']}`")
-        lines.append(f"  Confidence: {m['confidence']:.0%} ({m['reason']})")
-        lines.append("")
-
-    lines.append(f"\n{len(merges)} pending merges.")
-    lines.append("Use `approve_merge` or `reject_merge` with IDs to process.")
-    return "\n".join(lines)
-
-
-def _approve_merge(db_url: str, merge_id: str) -> str:
-    """Approve and execute a pending merge."""
-    from .llm.extractors.dedup import approve_merge
-
-    if approve_merge(db_url, merge_id):
-        return "Merge approved and executed."
-    return "Error: Failed to approve merge. ID may be invalid or already processed."
-
-
-def _reject_merge(db_url: str, merge_id: str) -> str:
-    """Reject a pending merge."""
-    from .llm.extractors.dedup import reject_merge
-
-    if reject_merge(db_url, merge_id):
-        return "Merge rejected."
-    return "Error: Failed to reject merge. ID may be invalid or already processed."
-
-
-def _get_topic_clusters(db_url: str, limit: int = 20) -> str:
-    """Get topic clusters."""
-    from .llm.consolidate import get_topic_clusters
-
-    clusters = get_topic_clusters(db_url, limit=limit)
-
-    if not clusters:
-        return "No topic clusters found. Run `run_consolidation` to create clusters."
-
-    lines = ["## Topic Clusters\n"]
-    for c in clusters:
-        lines.append(f"### {c['name']}")
-        if c.get("description"):
-            lines.append(c["description"])
-        lines.append(f"Members: {c['member_count']}")
-
-        # Show top members
-        entities = [m for m in c.get("members", []) if m.get("is_entity")]
-        if entities:
-            entity_names = [m["title"] for m in entities[:5]]
-            lines.append(f"Entities: {', '.join(entity_names)}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def _get_entity_relationships(
-    db_url: str,
-    entity_name: str | None = None,
-    relationship_type: str | None = None,
-    limit: int = 50,
-) -> str:
-    """Get entity relationships."""
-    from .llm.consolidate import get_entity_relationships
-
-    relationships = get_entity_relationships(
-        db_url, entity_name=entity_name, relationship_type=relationship_type, limit=limit
-    )
-
-    if not relationships:
-        if entity_name:
-            return f"No relationships found involving '{entity_name}'."
-        return "No entity relationships found. Run `run_consolidation` to extract relationships."
-
-    lines = ["## Entity Relationships\n"]
-    for r in relationships:
-        source = r["source"]["name"]
-        target = r["target"]["name"]
-        rel_type = r["type"]
-        confidence = r.get("confidence", 0)
-
-        lines.append(f"- **{source}** → *{rel_type}* → **{target}** ({confidence:.0%})")
-        if r.get("context"):
-            lines.append(f"  {r['context']}")
-
-    return "\n".join(lines)
-
-
-def _run_consolidation(
-    db_url: str,
-    detect_duplicates: bool = True,
-    detect_cross_doc: bool = True,
-    build_clusters: bool = True,
-    extract_relationships: bool = True,
-    dry_run: bool = False,
-) -> str:
-    """Run consolidation pipeline."""
-    from .llm import get_llm
-    from .llm.consolidate import format_consolidation_result, run_consolidation
-
-    # Check LLM is configured (needed for several phases)
-    if get_llm() is None and (detect_cross_doc or build_clusters or extract_relationships):
-        return (
-            "Error: No LLM provider configured. "
-            "Consolidation requires an LLM for cross-doc detection, clustering, and relationships. "
-            "Set ANTHROPIC_API_KEY or configure llm.provider in config."
+    try:
+        stats = get_content_stats(db_url, project)
+        samples = get_document_samples(
+            db_url,
+            project=project,
+            sample_size=sample_size,
+            strategy=strategy,
+            excerpt_length=excerpt_length,
         )
+    except Exception as e:
+        return f"Error fetching samples: {e}"
 
-    result = run_consolidation(
-        db_url,
-        detect_duplicates=detect_duplicates,
-        detect_cross_doc=detect_cross_doc,
-        build_clusters=build_clusters,
-        extract_relationships=extract_relationships,
-        auto_merge_threshold=config.consolidation_auto_merge_threshold,
-        dry_run=dry_run,
-    )
+    # Format stats section
+    lines = ["## Knowledge Base Statistics\n"]
+    lines.append(f"- Total documents: {stats['total_documents']}")
+    lines.append(f"- Total tokens: ~{stats['total_tokens']:,}")
+    if stats["source_types"]:
+        types_str = ", ".join(
+            f"{t}: {c}" for t, c in sorted(stats["source_types"].items(), key=lambda x: -x[1])
+        )
+        lines.append(f"- Source types: {types_str}")
+    if stats["projects"]:
+        lines.append(f"- Projects: {', '.join(stats['projects'])}")
+    if stats["date_range"]["earliest"]:
+        lines.append(
+            f"- Date range: {stats['date_range']['earliest']} to {stats['date_range']['latest']}"
+        )
+    if project:
+        lines.append(f"- Scoped to project: {project}")
 
-    return format_consolidation_result(result)
+    # Format samples section
+    lines.append(f"\n## Document Samples ({len(samples)} documents)\n")
+    for i, s in enumerate(samples, 1):
+        lines.append(f"### {i}. {s['title']} ({s['source_type']})")
+        excerpt = s["excerpt"] or ""
+        lines.append(excerpt)
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def _format_size(size_bytes: int) -> str:
@@ -1747,6 +1588,15 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Associated project name (optional)",
                     },
+                    "source_type": {
+                        "type": "string",
+                        "enum": ["claude-note", "synthesis"],
+                        "description": (
+                            "Document type: 'claude-note' (default) for general knowledge, "
+                            "'synthesis' for synthesis documents (uses okb://synthesis/ path)"
+                        ),
+                        "default": "claude-note",
+                    },
                 },
                 "required": ["title", "content"],
             },
@@ -1984,103 +1834,82 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="enrich_document",
+            name="synthesize_knowledge",
             description=(
-                "Run LLM enrichment on a document to extract TODOs and entities. "
-                "TODOs are created as separate documents, entities go to pending review. "
-                "Requires write permission."
+                "Analyze the knowledge base and propose synthetic knowledge documents. "
+                "Generates topic summaries, entity profiles, relationship maps, and insights. "
+                "Proposals go to pending review. Requires write permission."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "source_path": {
+                    "project": {
                         "type": "string",
-                        "description": "Path of the document to enrich",
+                        "description": "Scope synthesis to a specific project (optional)",
                     },
-                    "extract_todos": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "Whether to extract TODOs",
+                    "sample_size": {
+                        "type": "integer",
+                        "default": 25,
+                        "description": "Number of documents to sample (default: 25)",
                     },
-                    "extract_entities": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "Whether to extract entities",
-                    },
-                    "auto_create_entities": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Auto-create entities instead of pending review",
-                    },
-                    "use_local": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Use local CPU embedding instead of Modal GPU",
+                    "max_proposals": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Maximum proposals to generate (default: 10)",
                     },
                 },
-                "required": ["source_path"],
             },
         ),
         Tool(
-            name="list_pending_entities",
+            name="list_pending_synthesis",
             description=(
-                "List entity suggestions awaiting review. "
-                "Entities are extracted from documents but need approval before becoming searchable. "
-                "Use approve_entity or reject_entity to process them."
+                "List pending synthesis proposals awaiting review. "
+                "Use approve_synthesis or reject_synthesis to process them."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "entity_type": {
+                    "project": {
                         "type": "string",
-                        "enum": ["person", "project", "technology", "concept", "organization"],
-                        "description": "Filter by entity type (optional)",
+                        "description": "Filter by project (optional)",
                     },
                     "limit": {
                         "type": "integer",
-                        "default": 20,
+                        "default": 50,
                         "description": "Maximum results",
                     },
                 },
             },
         ),
         Tool(
-            name="approve_entity",
+            name="approve_synthesis",
             description=(
-                "Approve a pending entity, creating it as a searchable document. "
-                "The entity will be linked to its source document(s). "
-                "Use async=true to return immediately while embedding runs in background. "
-                "Requires write permission."
+                "Approve a pending synthesis proposal, creating it as a searchable document. "
+                "Optionally provide edited title/content. Requires write permission."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pending_id": {
                         "type": "string",
-                        "description": "ID of the pending entity to approve",
+                        "description": "ID of the pending synthesis to approve",
                     },
-                    "async": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": (
-                            "If true, return immediately while embedding runs in background. "
-                            "Useful to avoid blocking when approving multiple entities."
-                        ),
+                    "title": {
+                        "type": "string",
+                        "description": "Optional title override",
                     },
-                    "use_local": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Use local CPU embedding instead of Modal GPU",
+                    "content": {
+                        "type": "string",
+                        "description": "Optional content override",
                     },
                 },
                 "required": ["pending_id"],
             },
         ),
         Tool(
-            name="reject_entity",
+            name="reject_synthesis",
             description=(
-                "Reject a pending entity suggestion. "
-                "The entity will be marked as rejected and not shown again. "
+                "Reject a pending synthesis proposal. "
                 "Requires write permission."
             ),
             inputSchema={
@@ -2088,7 +1917,32 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "pending_id": {
                         "type": "string",
-                        "description": "ID of the pending entity to reject",
+                        "description": "ID of the pending synthesis to reject",
+                    },
+                },
+                "required": ["pending_id"],
+            },
+        ),
+        Tool(
+            name="edit_pending_synthesis",
+            description=(
+                "Edit a pending synthesis proposal before approving or rejecting. "
+                "Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pending_id": {
+                        "type": "string",
+                        "description": "ID of the pending synthesis to edit",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "New title",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "New content",
                     },
                 },
                 "required": ["pending_id"],
@@ -2098,7 +1952,7 @@ async def list_tools() -> list[Tool]:
             name="analyze_knowledge_base",
             description=(
                 "Analyze the knowledge base to generate or update its description and topics. "
-                "Uses entity data and document samples to understand themes and content. "
+                "Uses document samples to understand themes and content. "
                 "Results are stored in database_metadata for future sessions. "
                 "Requires write permission."
             ),
@@ -2123,179 +1977,34 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="find_entity_duplicates",
+            name="get_synthesis_samples",
             description=(
-                "Scan for potential duplicate entities using embedding similarity and LLM. "
-                "Returns pairs of entities that may refer to the same thing. "
-                "Use merge_entities or list_pending_merges to act on results."
+                "Get document samples and statistics for synthesizing knowledge. "
+                "Returns content excerpts suitable for the calling LLM to analyze and produce "
+                "synthesis documents. Save results via save_knowledge with source_type='synthesis'."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "similarity_threshold": {
-                        "type": "number",
-                        "description": "Minimum similarity to consider duplicates (default: 0.85)",
-                        "default": 0.85,
-                    },
-                    "entity_type": {
+                    "project": {
                         "type": "string",
-                        "enum": ["person", "project", "technology", "concept", "organization"],
-                        "description": "Filter to specific entity type (optional)",
+                        "description": "Scope to a specific project (optional)",
                     },
-                    "use_llm": {
-                        "type": "boolean",
-                        "description": "Use LLM for batch duplicate detection (default: true)",
-                        "default": True,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="merge_entities",
-            description=(
-                "Merge two entities: redirect refs from duplicate to canonical, "
-                "add duplicate's name as alias, delete duplicate. "
-                "Requires write permission."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "canonical_path": {
-                        "type": "string",
-                        "description": "Source path of the entity to keep",
-                    },
-                    "duplicate_path": {
-                        "type": "string",
-                        "description": "Source path of the entity to merge into canonical",
-                    },
-                },
-                "required": ["canonical_path", "duplicate_path"],
-            },
-        ),
-        Tool(
-            name="list_pending_merges",
-            description=(
-                "List pending entity merge proposals awaiting approval. "
-                "Created by find_entity_duplicates or run_consolidation."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
+                    "sample_size": {
                         "type": "integer",
-                        "description": "Maximum results (default: 50)",
-                        "default": 50,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="approve_merge",
-            description=(
-                "Approve a pending entity merge. Executes the merge: "
-                "redirects refs, adds alias, deletes duplicate. "
-                "Requires write permission."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "merge_id": {
-                        "type": "string",
-                        "description": "ID of the pending merge to approve",
-                    },
-                },
-                "required": ["merge_id"],
-            },
-        ),
-        Tool(
-            name="reject_merge",
-            description=(
-                "Reject a pending entity merge proposal. "
-                "Requires write permission."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "merge_id": {
-                        "type": "string",
-                        "description": "ID of the pending merge to reject",
-                    },
-                },
-                "required": ["merge_id"],
-            },
-        ),
-        Tool(
-            name="get_topic_clusters",
-            description=(
-                "Get topic clusters - groups of related entities and documents. "
-                "Clusters are created by run_consolidation."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum clusters to return (default: 20)",
+                        "description": "Number of documents to sample (default: 20, max: 50)",
                         "default": 20,
                     },
-                },
-            },
-        ),
-        Tool(
-            name="get_entity_relationships",
-            description=(
-                "Get relationships between entities (works_for, uses, belongs_to, related_to). "
-                "Relationships are extracted by run_consolidation."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "entity_name": {
+                    "strategy": {
                         "type": "string",
-                        "description": "Filter to relationships involving this entity (optional)",
+                        "enum": ["diverse", "recent", "random"],
+                        "description": "Sampling strategy (default: diverse)",
+                        "default": "diverse",
                     },
-                    "limit": {
+                    "excerpt_length": {
                         "type": "integer",
-                        "description": "Maximum results (default: 50)",
-                        "default": 50,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="run_consolidation",
-            description=(
-                "Run full entity consolidation pipeline: duplicate detection, "
-                "cross-document entity detection, topic clustering, relationship extraction. "
-                "Creates pending proposals for review. Requires write permission."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "detect_duplicates": {
-                        "type": "boolean",
-                        "description": "Run duplicate entity detection (default: true)",
-                        "default": True,
-                    },
-                    "detect_cross_doc": {
-                        "type": "boolean",
-                        "description": "Run cross-document entity detection (default: true)",
-                        "default": True,
-                    },
-                    "build_clusters": {
-                        "type": "boolean",
-                        "description": "Build topic clusters (default: true)",
-                        "default": True,
-                    },
-                    "extract_relationships": {
-                        "type": "boolean",
-                        "description": "Extract entity relationships (default: true)",
-                        "default": True,
-                    },
-                    "dry_run": {
-                        "type": "boolean",
-                        "description": "Report what would happen without making changes",
-                        "default": False,
+                        "description": "Characters per excerpt (default: 1500, max: 3000)",
+                        "default": 1500,
                     },
                 },
             },
@@ -2587,6 +2296,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 content=arguments["content"],
                 tags=arguments.get("tags"),
                 project=arguments.get("project"),
+                source_type=arguments.get("source_type", "claude-note"),
             )
             if result["status"] == "duplicate":
                 return CallToolResult(
@@ -2759,36 +2469,53 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             result = _list_sync_sources(kb.db_url, db_name)
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
-        elif name == "enrich_document":
-            result = _enrich_document(
+        elif name == "get_synthesis_samples":
+            result = _get_synthesis_samples(
                 kb.db_url,
-                source_path=arguments["source_path"],
-                extract_todos=arguments.get("extract_todos", True),
-                extract_entities=arguments.get("extract_entities", True),
-                auto_create_entities=arguments.get("auto_create_entities", False),
-                use_modal=not arguments.get("use_local", False),
+                project=arguments.get("project"),
+                sample_size=arguments.get("sample_size", 20),
+                strategy=arguments.get("strategy", "diverse"),
+                excerpt_length=arguments.get("excerpt_length", 1500),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
-        elif name == "list_pending_entities":
-            result = _list_pending_entities(
+        elif name == "synthesize_knowledge":
+            result = _synthesize_knowledge(
                 kb.db_url,
-                entity_type=arguments.get("entity_type"),
-                limit=arguments.get("limit", 20),
+                project=arguments.get("project"),
+                sample_size=arguments.get("sample_size", 25),
+                max_proposals=arguments.get("max_proposals", 10),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
-        elif name == "approve_entity":
-            result = _approve_entity(
+        elif name == "list_pending_synthesis":
+            result = _list_pending_synthesis(
+                kb.db_url,
+                project=arguments.get("project"),
+                limit=arguments.get("limit", 50),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "approve_synthesis":
+            result = _approve_synthesis(
                 kb.db_url,
                 arguments["pending_id"],
-                use_modal=not arguments.get("use_local", False),
-                run_async=arguments.get("async", False),
+                title=arguments.get("title"),
+                content=arguments.get("content"),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
-        elif name == "reject_entity":
-            result = _reject_entity(kb.db_url, arguments["pending_id"])
+        elif name == "reject_synthesis":
+            result = _reject_synthesis(kb.db_url, arguments["pending_id"])
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
+        elif name == "edit_pending_synthesis":
+            result = _edit_pending_synthesis(
+                kb.db_url,
+                arguments["pending_id"],
+                title=arguments.get("title"),
+                content=arguments.get("content"),
+            )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "analyze_knowledge_base":
@@ -2797,65 +2524,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 project=arguments.get("project"),
                 sample_size=arguments.get("sample_size", 15),
                 auto_update=arguments.get("auto_update", True),
-            )
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "find_entity_duplicates":
-            result = _find_entity_duplicates(
-                kb.db_url,
-                similarity_threshold=arguments.get("similarity_threshold", 0.85),
-                entity_type=arguments.get("entity_type"),
-                use_llm=arguments.get("use_llm", True),
-            )
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "merge_entities":
-            result = _merge_entities(
-                kb.db_url,
-                canonical_path=arguments["canonical_path"],
-                duplicate_path=arguments["duplicate_path"],
-            )
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "list_pending_merges":
-            result = _list_pending_merges(
-                kb.db_url,
-                limit=arguments.get("limit", 50),
-            )
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "approve_merge":
-            result = _approve_merge(kb.db_url, arguments["merge_id"])
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "reject_merge":
-            result = _reject_merge(kb.db_url, arguments["merge_id"])
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "get_topic_clusters":
-            result = _get_topic_clusters(
-                kb.db_url,
-                limit=arguments.get("limit", 20),
-            )
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "get_entity_relationships":
-            result = _get_entity_relationships(
-                kb.db_url,
-                entity_name=arguments.get("entity_name"),
-                relationship_type=arguments.get("relationship_type"),
-                limit=arguments.get("limit", 50),
-            )
-            return CallToolResult(content=[TextContent(type="text", text=result)])
-
-        elif name == "run_consolidation":
-            result = _run_consolidation(
-                kb.db_url,
-                detect_duplicates=arguments.get("detect_duplicates", True),
-                detect_cross_doc=arguments.get("detect_cross_doc", True),
-                build_clusters=arguments.get("build_clusters", True),
-                extract_relationships=arguments.get("extract_relationships", True),
-                dry_run=arguments.get("dry_run", False),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 

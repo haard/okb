@@ -1,4 +1,4 @@
-"""LLM integration for document classification and enrichment.
+"""LLM integration for document classification and synthesis.
 
 This package provides a provider-agnostic interface for LLM operations,
 with support for Claude API, AWS Bedrock, and response caching.

@@ -52,6 +52,7 @@ READ_ONLY_TOOLS = frozenset(
         "list_pending_merges",
         "get_topic_clusters",
         "get_entity_relationships",
+        "get_synthesis_samples",
         "list_snapshots",
     }
 )
@@ -64,15 +65,11 @@ WRITE_TOOLS = frozenset(
         "add_todo",
         "trigger_sync",
         "trigger_rescan",
-        "enrich_document",
-        "approve_entity",
-        "reject_entity",
+        "synthesize_knowledge",
+        "approve_synthesis",
+        "reject_synthesis",
+        "edit_pending_synthesis",
         "analyze_knowledge_base",
-        "find_entity_duplicates",
-        "merge_entities",
-        "approve_merge",
-        "reject_merge",
-        "run_consolidation",
         "rename_project",
         "set_document_project",
         "save_snapshot",
@@ -336,6 +333,7 @@ class HTTPMCPServer:
                     content=arguments["content"],
                     tags=arguments.get("tags"),
                     project=arguments.get("project"),
+                    source_type=arguments.get("source_type", "claude-note"),
                 )
                 if result["status"] == "duplicate":
                     return CallToolResult(
@@ -505,38 +503,65 @@ class HTTPMCPServer:
                 result = _list_sync_sources(kb.db_url, db_name)
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
-            elif name == "enrich_document":
-                from .mcp_server import _enrich_document
+            elif name == "get_synthesis_samples":
+                from .mcp_server import _get_synthesis_samples
 
-                result = _enrich_document(
+                result = _get_synthesis_samples(
                     kb.db_url,
-                    source_path=arguments["source_path"],
-                    extract_todos=arguments.get("extract_todos", True),
-                    extract_entities=arguments.get("extract_entities", True),
-                    auto_create_entities=arguments.get("auto_create_entities", False),
+                    project=arguments.get("project"),
+                    sample_size=arguments.get("sample_size", 20),
+                    strategy=arguments.get("strategy", "diverse"),
+                    excerpt_length=arguments.get("excerpt_length", 1500),
                 )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
-            elif name == "list_pending_entities":
-                from .mcp_server import _list_pending_entities
+            elif name == "synthesize_knowledge":
+                from .mcp_server import _synthesize_knowledge
 
-                result = _list_pending_entities(
+                result = _synthesize_knowledge(
                     kb.db_url,
-                    entity_type=arguments.get("entity_type"),
-                    limit=arguments.get("limit", 20),
+                    project=arguments.get("project"),
+                    sample_size=arguments.get("sample_size", 25),
+                    max_proposals=arguments.get("max_proposals", 10),
                 )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
-            elif name == "approve_entity":
-                from .mcp_server import _approve_entity
+            elif name == "list_pending_synthesis":
+                from .mcp_server import _list_pending_synthesis
 
-                result = _approve_entity(kb.db_url, arguments["pending_id"])
+                result = _list_pending_synthesis(
+                    kb.db_url,
+                    project=arguments.get("project"),
+                    limit=arguments.get("limit", 50),
+                )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
-            elif name == "reject_entity":
-                from .mcp_server import _reject_entity
+            elif name == "approve_synthesis":
+                from .mcp_server import _approve_synthesis
 
-                result = _reject_entity(kb.db_url, arguments["pending_id"])
+                result = _approve_synthesis(
+                    kb.db_url,
+                    arguments["pending_id"],
+                    title=arguments.get("title"),
+                    content=arguments.get("content"),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "reject_synthesis":
+                from .mcp_server import _reject_synthesis
+
+                result = _reject_synthesis(kb.db_url, arguments["pending_id"])
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "edit_pending_synthesis":
+                from .mcp_server import _edit_pending_synthesis
+
+                result = _edit_pending_synthesis(
+                    kb.db_url,
+                    arguments["pending_id"],
+                    title=arguments.get("title"),
+                    content=arguments.get("content"),
+                )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
             elif name == "analyze_knowledge_base":
@@ -547,81 +572,6 @@ class HTTPMCPServer:
                     project=arguments.get("project"),
                     sample_size=arguments.get("sample_size", 15),
                     auto_update=arguments.get("auto_update", True),
-                )
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            # Entity consolidation tools
-            elif name == "find_entity_duplicates":
-                from .mcp_server import _find_entity_duplicates
-
-                result = _find_entity_duplicates(
-                    kb.db_url,
-                    similarity_threshold=arguments.get("similarity_threshold", 0.85),
-                    limit=arguments.get("limit", 50),
-                )
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "merge_entities":
-                from .mcp_server import _merge_entities
-
-                result = _merge_entities(
-                    kb.db_url,
-                    canonical_path=arguments["canonical_path"],
-                    duplicate_path=arguments["duplicate_path"],
-                )
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "list_pending_merges":
-                from .mcp_server import _list_pending_merges
-
-                result = _list_pending_merges(
-                    kb.db_url,
-                    limit=arguments.get("limit", 50),
-                )
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "approve_merge":
-                from .mcp_server import _approve_merge
-
-                result = _approve_merge(kb.db_url, arguments["merge_id"])
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "reject_merge":
-                from .mcp_server import _reject_merge
-
-                result = _reject_merge(kb.db_url, arguments["merge_id"])
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "get_topic_clusters":
-                from .mcp_server import _get_topic_clusters
-
-                result = _get_topic_clusters(
-                    kb.db_url,
-                    limit=arguments.get("limit", 20),
-                )
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "get_entity_relationships":
-                from .mcp_server import _get_entity_relationships
-
-                result = _get_entity_relationships(
-                    kb.db_url,
-                    entity_name=arguments.get("entity_name"),
-                    relationship_type=arguments.get("relationship_type"),
-                    limit=arguments.get("limit", 50),
-                )
-                return CallToolResult(content=[TextContent(type="text", text=result)])
-
-            elif name == "run_consolidation":
-                from .mcp_server import _run_consolidation
-
-                result = _run_consolidation(
-                    kb.db_url,
-                    detect_duplicates=arguments.get("detect_duplicates", True),
-                    detect_cross_doc=arguments.get("detect_cross_doc", True),
-                    build_clusters=arguments.get("build_clusters", True),
-                    extract_relationships=arguments.get("extract_relationships", True),
-                    dry_run=arguments.get("dry_run", False),
                 )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 

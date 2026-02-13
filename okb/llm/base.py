@@ -61,6 +61,7 @@ class LLMProvider(Protocol):
         prompt: str,
         system: str | None = None,
         max_tokens: int = 1024,
+        timeout: float | None = None,
     ) -> LLMResponse:
         """Generate a completion for the given prompt.
 
@@ -68,6 +69,7 @@ class LLMProvider(Protocol):
             prompt: The user prompt to complete
             system: Optional system prompt for context/instructions
             max_tokens: Maximum tokens in the response
+            timeout: Per-request timeout override in seconds (uses provider default if None)
 
         Returns:
             LLMResponse with the generated content and metadata

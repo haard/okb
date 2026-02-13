@@ -1,4 +1,4 @@
-"""Database/project-level analysis - aggregate entities and extract themes."""
+"""Database/project-level analysis - extract themes and generate descriptions."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ class AnalysisResult:
 
     description: str
     topics: list[str]
-    key_entities: list[dict]  # [{name, type, ref_count, doc_count}]
     stats: dict
     sample_count: int
     analyzed_at: datetime
@@ -25,7 +24,7 @@ class AnalysisResult:
 
 
 ANALYSIS_SYSTEM = """You are analyzing a personal knowledge base to understand its contents.
-Based on the provided statistics, entity list, and document samples,
+Based on the provided statistics and document samples,
 generate a concise description and topic keywords.
 
 Focus on PURPOSE and THEMES, not statistics.
@@ -38,9 +37,6 @@ Return ONLY valid JSON with this structure:
 ANALYSIS_USER = """## Content Statistics
 {stats}
 
-## Most Referenced Entities ({entity_count} shown)
-{entity_list}
-
 ## Sample Document Titles and Excerpts ({sample_count} documents)
 {document_samples}
 
@@ -48,47 +44,6 @@ ANALYSIS_USER = """## Content Statistics
 Analyze this knowledge base and return JSON with "description" and "topics" fields.
 The description should capture the overall purpose and main themes (1-3 sentences).
 Topics should be 5-15 keywords that characterize the content."""
-
-
-def get_entity_summary(
-    db_url: str,
-    project: str | None = None,
-    limit: int = 20,
-) -> list[dict]:
-    """Get most-mentioned entities with reference counts.
-
-    Returns list of dicts with: name, type, ref_count, doc_count
-    """
-    with psycopg.connect(db_url, row_factory=dict_row) as conn:
-        sql = """
-            SELECT
-                e.title as name,
-                e.metadata->>'entity_type' as type,
-                COUNT(DISTINCT r.id) as ref_count,
-                COUNT(DISTINCT r.document_id) as doc_count
-            FROM documents e
-            JOIN entity_refs r ON r.entity_id = e.id
-            WHERE e.source_type = 'entity'
-        """
-        params: list[Any] = []
-
-        if project:
-            sql += """
-                AND r.document_id IN (
-                    SELECT id FROM documents WHERE metadata->>'project' = %s
-                )
-            """
-            params.append(project)
-
-        sql += """
-            GROUP BY e.id, e.title, e.metadata->>'entity_type'
-            ORDER BY ref_count DESC
-            LIMIT %s
-        """
-        params.append(limit)
-
-        results = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in results]
 
 
 def get_content_stats(db_url: str, project: str | None = None) -> dict:
@@ -180,6 +135,7 @@ def get_document_samples(
     project: str | None = None,
     sample_size: int = 15,
     strategy: str = "diverse",
+    excerpt_length: int = 500,
 ) -> list[dict]:
     """Get representative document samples for topic extraction.
 
@@ -188,9 +144,10 @@ def get_document_samples(
         project: Filter by project
         sample_size: Number of documents to sample
         strategy: Sampling strategy - "diverse" uses embedding distance, "recent", or "random"
+        excerpt_length: Number of characters to include in excerpts (default: 500)
 
     Returns:
-        List of dicts with: title, source_type, excerpt (first ~500 chars)
+        List of dicts with: title, source_type, excerpt
     """
     with psycopg.connect(db_url, row_factory=dict_row) as conn:
         from pgvector.psycopg import register_vector
@@ -207,6 +164,7 @@ def get_document_samples(
         base_filter = """
             d.source_path NOT LIKE '%%::todo/%%'
             AND d.source_path NOT LIKE 'okb://entity/%%'
+            AND d.source_path NOT LIKE 'okb://synthesis/%%'
             AND d.source_path NOT LIKE 'claude://%%'
         """
 
@@ -224,22 +182,26 @@ def get_document_samples(
                     LIMIT 1
                 )
                 SELECT id, title, source_type,
-                       LEFT(content, 500) as excerpt
+                       LEFT(content, %s) as excerpt
                 FROM first_doc
             """
-            results = list(conn.execute(sql, params).fetchall())
+            results = list(conn.execute(sql, params + [excerpt_length]).fetchall())
 
             if results:
                 # Get remaining documents with embeddings
                 sql = f"""
                     SELECT d.id, d.title, d.source_type,
-                           LEFT(d.content, 500) as excerpt,
+                           LEFT(d.content, %s) as excerpt,
                            (SELECT embedding FROM chunks WHERE document_id = d.id LIMIT 1) as emb
                     FROM documents d
                     WHERE {base_filter} {project_filter}
                     AND d.id != %s
                 """
-                remaining = list(conn.execute(sql, params + [results[0]["id"]]).fetchall())
+                remaining = list(
+                    conn.execute(
+                        sql, [excerpt_length] + params + [results[0]["id"]]
+                    ).fetchall()
+                )
 
                 # Iteratively select documents farthest from selected set
                 selected_embs = []
@@ -300,24 +262,24 @@ def get_document_samples(
         elif strategy == "recent":
             sql = f"""
                 SELECT d.title, d.source_type,
-                       LEFT(d.content, 500) as excerpt
+                       LEFT(d.content, %s) as excerpt
                 FROM documents d
                 WHERE {base_filter} {project_filter}
                 ORDER BY d.updated_at DESC
                 LIMIT %s
             """
-            results = conn.execute(sql, params + [sample_size]).fetchall()
+            results = conn.execute(sql, [excerpt_length] + params + [sample_size]).fetchall()
 
         else:  # random
             sql = f"""
                 SELECT d.title, d.source_type,
-                       LEFT(d.content, 500) as excerpt
+                       LEFT(d.content, %s) as excerpt
                 FROM documents d
                 WHERE {base_filter} {project_filter}
                 ORDER BY RANDOM()
                 LIMIT %s
             """
-            results = conn.execute(sql, params + [sample_size]).fetchall()
+            results = conn.execute(sql, [excerpt_length] + params + [sample_size]).fetchall()
 
         return [
             {"title": r["title"], "source_type": r["source_type"], "excerpt": r["excerpt"]}
@@ -346,7 +308,6 @@ def analyze_database(
 
     # Gather data
     stats = get_content_stats(db_url, project)
-    entities = get_entity_summary(db_url, project, limit=20)
     samples = get_document_samples(db_url, project, sample_size, strategy="diverse")
 
     # Format stats for prompt
@@ -365,15 +326,6 @@ def analyze_database(
             f"Date range: {stats['date_range']['earliest']} to {stats['date_range']['latest']}"
         )
 
-    # Format entities for prompt
-    entity_text = []
-    for e in entities:
-        entity_text.append(
-            f"- {e['name']} ({e['type']}): {e['ref_count']} mentions in {e['doc_count']} docs"
-        )
-    if not entity_text:
-        entity_text.append("(No entities extracted yet)")
-
     # Format samples for prompt
     sample_text = []
     for s in samples:
@@ -383,8 +335,6 @@ def analyze_database(
     # Build prompt
     prompt = ANALYSIS_USER.format(
         stats="\n".join(stats_text),
-        entity_count=len(entities),
-        entity_list="\n".join(entity_text),
         sample_count=len(samples),
         document_samples="\n\n".join(sample_text),
     )
@@ -418,7 +368,6 @@ def analyze_database(
     result = AnalysisResult(
         description=description,
         topics=topics,
-        key_entities=entities,
         stats=stats,
         sample_count=len(samples),
         analyzed_at=datetime.now(UTC),
@@ -478,7 +427,6 @@ def _update_metadata(db_url: str, result: AnalysisResult) -> None:
                     {
                         "analyzed_at": result.analyzed_at.isoformat(),
                         "sample_count": result.sample_count,
-                        "entity_count": len(result.key_entities),
                         "doc_count": result.stats["total_documents"],
                     }
                 ),
@@ -509,14 +457,6 @@ def format_analysis_result(result: AnalysisResult) -> str:
         lines.append(f"- Source types: {types_str}")
     if result.stats["projects"]:
         lines.append(f"- Projects: {', '.join(result.stats['projects'])}")
-
-    if result.key_entities:
-        lines.append("\n### Key Entities (by mentions)")
-        for i, e in enumerate(result.key_entities[:10], 1):
-            lines.append(
-                f"{i}. {e['name']} ({e['type']}) - "
-                f"{e['ref_count']} mentions in {e['doc_count']} docs"
-            )
 
     timestamp = result.analyzed_at.strftime("%Y-%m-%d %H:%M")
     lines.append(f"\nAnalyzed {result.sample_count} document samples at {timestamp}")
