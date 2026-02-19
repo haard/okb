@@ -90,8 +90,12 @@ class HTTPMCPServer:
     """HTTP server for MCP with token authentication using Streamable HTTP transport."""
 
     def __init__(self):
+        from . import __version__
+
         self.knowledge_bases: dict[str, KnowledgeBase] = {}
-        self.server = Server("knowledge-base")
+        self.server = Server(
+            "knowledge-base", version=__version__, instructions=f"OKB v{__version__}"
+        )
         # Session manager handles all transport complexity
         self.session_manager = StreamableHTTPSessionManager(app=self.server)
         # Map mcp-session-id -> token_info

@@ -38,6 +38,7 @@ from mcp.types import (
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
+from . import __version__ as _okb_version
 from .config import config
 from .local_embedder import embed_document, embed_query, warmup
 
@@ -1424,18 +1425,20 @@ def _restore_snapshot(name: str, confirm: bool, db_name: str | None = None) -> s
         return f"Error restoring snapshot: {e}"
 
 
-def build_server_instructions(db_config) -> str | None:
+def build_server_instructions(db_config) -> str:
     """Build server instructions from database config and LLM metadata."""
-    parts = []
+    from . import __version__
+
+    parts = [f"OKB v{__version__}"]
     if db_config.description:
         parts.append(db_config.description)
     if db_config.topics:
         parts.append(f"Topics: {', '.join(db_config.topics)}")
-    return " ".join(parts) if parts else None
+    return " ".join(parts)
 
 
 # Initialize server and knowledge base
-server = Server("knowledge-base")
+server = Server("knowledge-base", version=_okb_version)
 kb: KnowledgeBase | None = None
 
 
