@@ -504,6 +504,108 @@ class KnowledgeBase:
             "token_count": token_count,
         }
 
+    def update_knowledge(
+        self,
+        source_path: str,
+        title: str | None = None,
+        content: str | None = None,
+        tags: list[str] | None = None,
+        project: str | None = None,
+    ) -> dict:
+        """Update an existing knowledge document, preserving source_path and created_at."""
+        conn = self.get_connection()
+
+        # Fetch existing document
+        doc = conn.execute(
+            "SELECT id, title, content, metadata, content_hash FROM documents WHERE source_path = %s",
+            (source_path,),
+        ).fetchone()
+        if not doc:
+            return {"status": "not_found", "source_path": source_path}
+
+        # Merge: use provided values, fall back to existing
+        existing_meta = doc["metadata"] or {}
+        new_title = title if title is not None else doc["title"]
+        new_content = content if content is not None else doc["content"]
+        new_tags = tags if tags is not None else existing_meta.get("tags")
+        new_project = project if project is not None else existing_meta.get("project")
+
+        # Build metadata
+        new_meta = dict(existing_meta)
+        if new_tags is not None:
+            new_meta["tags"] = new_tags
+        elif "tags" in new_meta and tags is not None:
+            del new_meta["tags"]
+        if new_project is not None:
+            new_meta["project"] = new_project
+        elif "project" in new_meta and project is not None:
+            del new_meta["project"]
+
+        # Content hash for deduplication
+        new_content_hash = hashlib.sha256(new_content.encode()).hexdigest()[:16]
+
+        # Check for duplicate content (only if content changed, and not self)
+        if new_content_hash != doc["content_hash"]:
+            existing = conn.execute(
+                "SELECT source_path, title FROM documents WHERE content_hash = %s AND source_path != %s",
+                (new_content_hash, source_path),
+            ).fetchone()
+            if existing:
+                return {
+                    "status": "duplicate",
+                    "existing_path": existing["source_path"],
+                    "existing_title": existing["title"],
+                }
+
+        # Build contextual embedding text
+        embedding_parts = [f"Document: {new_title}"]
+        if new_project:
+            embedding_parts.append(f"Project: {new_project}")
+        if new_tags:
+            embedding_parts.append(f"Topics: {', '.join(new_tags)}")
+        embedding_parts.append(f"Content: {new_content}")
+        embedding_text = "\n".join(embedding_parts)
+
+        # Generate embedding
+        embedding = embed_document(embedding_text)
+
+        # Update document
+        conn.execute(
+            """
+            UPDATE documents
+            SET title = %s, content = %s, metadata = %s, content_hash = %s, updated_at = NOW()
+            WHERE source_path = %s
+            """,
+            (
+                new_title,
+                new_content,
+                psycopg.types.json.Json(new_meta),
+                new_content_hash,
+                source_path,
+            ),
+        )
+
+        # Replace chunks
+        doc_id = doc["id"]
+        conn.execute("DELETE FROM chunks WHERE document_id = %s", (doc_id,))
+        token_count = len(new_content) // 4
+        conn.execute(
+            """
+            INSERT INTO chunks (document_id, chunk_index, content, embedding_text, embedding, token_count, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (doc_id, 0, new_content, embedding_text, embedding, token_count, psycopg.types.json.Json({})),
+        )
+
+        conn.commit()
+
+        return {
+            "status": "updated",
+            "source_path": source_path,
+            "title": new_title,
+            "token_count": token_count,
+        }
+
     def delete_knowledge(self, source_path: str) -> bool:
         """Delete a document by source path."""
         conn = self.get_connection()
@@ -1156,13 +1258,13 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
-def _save_snapshot(name: str | None = None) -> str:
+def _save_snapshot(name: str | None = None, db_name: str | None = None) -> str:
     """Create a database snapshot."""
     import subprocess
 
     from .config import get_snapshots_dir
 
-    db_cfg = config.get_database()
+    db_cfg = config.get_database(db_name)
 
     if not db_cfg.managed:
         return (
@@ -1219,11 +1321,11 @@ def _save_snapshot(name: str | None = None) -> str:
         return f"Error creating snapshot: {e}"
 
 
-def _list_snapshots() -> str:
+def _list_snapshots(db_name: str | None = None) -> str:
     """List available database snapshots."""
     from .config import get_snapshots_dir
 
-    db_cfg = config.get_database()
+    db_cfg = config.get_database(db_name)
     snapshots_dir = get_snapshots_dir(db_cfg.database_name)
 
     if not snapshots_dir.exists():
@@ -1245,7 +1347,7 @@ def _list_snapshots() -> str:
     return "\n".join(lines)
 
 
-def _restore_snapshot(name: str, confirm: bool) -> str:
+def _restore_snapshot(name: str, confirm: bool, db_name: str | None = None) -> str:
     """Restore database from a snapshot."""
     import subprocess
 
@@ -1257,7 +1359,7 @@ def _restore_snapshot(name: str, confirm: bool) -> str:
             "Set confirm=true to proceed. WARNING: This will replace ALL data in the database."
         )
 
-    db_cfg = config.get_database()
+    db_cfg = config.get_database(db_name)
 
     if not db_cfg.managed:
         return (
@@ -1287,7 +1389,7 @@ def _restore_snapshot(name: str, confirm: bool) -> str:
 
     # Create pre-restore backup (always for MCP - safety first for LLM agents)
     backup_name = f"pre-restore-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
-    backup_result = _save_snapshot(backup_name)
+    backup_result = _save_snapshot(backup_name, db_name=db_name)
     backup_warning = ""
     if backup_result.startswith("Error"):
         backup_warning = f" Warning: pre-restore backup failed ({backup_result})"
@@ -1613,6 +1715,41 @@ async def list_tools() -> list[Tool]:
                     "source_path": {
                         "type": "string",
                         "description": "The source path of the knowledge entry to delete",
+                    },
+                },
+                "required": ["source_path"],
+            },
+        ),
+        Tool(
+            name="update_knowledge",
+            description=(
+                "Update an existing knowledge document in-place. Preserves the source_path "
+                "and created_at timestamp. Only provide fields you want to change; omitted "
+                "fields keep their current values. Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "The source path of the document to update",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "New title (omit to keep current)",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "New content, full replacement (omit to keep current)",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "New tags, replaces existing (omit to keep current)",
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "New project name (omit to keep current)",
                     },
                 },
                 "required": ["source_path"],
@@ -2336,6 +2473,50 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                     TextContent(
                         type="text",
                         text="Could not delete. Document not found.",
+                    )
+                ]
+            )
+
+        elif name == "update_knowledge":
+            result = kb.update_knowledge(
+                source_path=arguments["source_path"],
+                title=arguments.get("title"),
+                content=arguments.get("content"),
+                tags=arguments.get("tags"),
+                project=arguments.get("project"),
+            )
+            if result["status"] == "not_found":
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=f"Document not found: `{result['source_path']}`",
+                        )
+                    ]
+                )
+            if result["status"] == "duplicate":
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=(
+                                f"Duplicate content already exists:\n"
+                                f"- Title: {result['existing_title']}\n"
+                                f"- Path: `{result['existing_path']}`"
+                            ),
+                        )
+                    ]
+                )
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Knowledge updated successfully:\n"
+                            f"- Title: {result['title']}\n"
+                            f"- Path: `{result['source_path']}`\n"
+                            f"- Tokens: ~{result['token_count']}"
+                        ),
                     )
                 ]
             )

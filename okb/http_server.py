@@ -48,11 +48,8 @@ READ_ONLY_TOOLS = frozenset(
         "get_actionable_items",
         "get_database_info",
         "list_sync_sources",
-        "list_pending_entities",
-        "list_pending_merges",
-        "get_topic_clusters",
-        "get_entity_relationships",
         "get_synthesis_samples",
+        "list_pending_synthesis",
         "list_snapshots",
     }
 )
@@ -61,6 +58,7 @@ WRITE_TOOLS = frozenset(
     {
         "save_knowledge",
         "delete_knowledge",
+        "update_knowledge",
         "set_database_description",
         "add_todo",
         "trigger_sync",
@@ -572,6 +570,78 @@ class HTTPMCPServer:
                     project=arguments.get("project"),
                     sample_size=arguments.get("sample_size", 15),
                     auto_update=arguments.get("auto_update", True),
+                )
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "update_knowledge":
+                result = kb.update_knowledge(
+                    source_path=arguments["source_path"],
+                    title=arguments.get("title"),
+                    content=arguments.get("content"),
+                    tags=arguments.get("tags"),
+                    project=arguments.get("project"),
+                )
+                if result["status"] == "not_found":
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text",
+                                text=f"Document not found: `{result['source_path']}`",
+                            )
+                        ]
+                    )
+                if result["status"] == "duplicate":
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text",
+                                text=(
+                                    f"Duplicate content already exists:\n"
+                                    f"- Title: {result['existing_title']}\n"
+                                    f"- Path: `{result['existing_path']}`"
+                                ),
+                            )
+                        ]
+                    )
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=(
+                                f"Knowledge updated successfully:\n"
+                                f"- Title: {result['title']}\n"
+                                f"- Path: `{result['source_path']}`\n"
+                                f"- Tokens: ~{result['token_count']}"
+                            ),
+                        )
+                    ]
+                )
+
+            elif name == "save_snapshot":
+                from .mcp_server import _save_snapshot
+
+                token_info = getattr(self.server, "_current_token_info", None)
+                db_name = token_info.database if token_info else None
+                result = _save_snapshot(arguments.get("name"), db_name=db_name)
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "list_snapshots":
+                from .mcp_server import _list_snapshots
+
+                token_info = getattr(self.server, "_current_token_info", None)
+                db_name = token_info.database if token_info else None
+                result = _list_snapshots(db_name=db_name)
+                return CallToolResult(content=[TextContent(type="text", text=result)])
+
+            elif name == "restore_snapshot":
+                from .mcp_server import _restore_snapshot
+
+                token_info = getattr(self.server, "_current_token_info", None)
+                db_name = token_info.database if token_info else None
+                result = _restore_snapshot(
+                    arguments["name"],
+                    arguments.get("confirm", False),
+                    db_name=db_name,
                 )
                 return CallToolResult(content=[TextContent(type="text", text=result)])
 
