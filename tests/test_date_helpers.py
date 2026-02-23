@@ -1,16 +1,12 @@
-"""Tests for date/time helper functions in mcp_server.py."""
+"""Tests for date/time helper functions."""
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
-from okb.mcp_server import (
-    format_relative_time,
-    get_document_date,
-    parse_date_range,
-    parse_since_filter,
-)
+from okb.mcp_server import parse_date_range, parse_since_filter
+from okb.tools import format_relative_time, get_document_date
 
 
 class TestGetDocumentDate:
@@ -39,7 +35,7 @@ class TestFormatRelativeTime:
     def freeze_time(self):
         """Freeze time to 2024-01-15 12:00:00 UTC for consistent tests."""
         frozen = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
-        with patch("okb.mcp_server.datetime") as mock_dt:
+        with patch("okb.tools.datetime") as mock_dt:
             mock_dt.now.return_value = frozen
             mock_dt.fromisoformat = datetime.fromisoformat
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
