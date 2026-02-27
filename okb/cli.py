@@ -2126,8 +2126,8 @@ def _get_systemd_user_dir() -> Path:
 
 
 def _get_okb_path() -> str | None:
-    """Get the path to the okb executable."""
-    return shutil.which("okb")
+    """Get the path to the okb-admin executable."""
+    return shutil.which("okb-admin")
 
 
 def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -2212,7 +2212,7 @@ def service_install(no_start: bool):
     """
     okb_path = _get_okb_path()
     if not okb_path:
-        click.echo("Error: okb executable not found in PATH", err=True)
+        click.echo("Error: okb-admin executable not found in PATH", err=True)
         sys.exit(1)
 
     systemd_dir = _get_systemd_user_dir()

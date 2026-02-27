@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-02-27
+
+### Fixed
+- Systemd service files used `okb` (client CLI) instead of `okb-admin` for `db start` and
+  `serve --http`, causing service startup failures
+
 ## [2.2.0] - 2026-02-27
 
 ### Added
