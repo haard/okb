@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-02-27
+
+### Fixed
+- Run blocking tool operations (`trigger_sync`, `trigger_rescan`, `synthesize_knowledge`,
+  `analyze_knowledge_base`) in threads to avoid blocking the event loop and breaking the
+  SSE transport
+- Unwrap `ExceptionGroup` in CLI client to show actual error messages instead of
+  "unhandled errors in a TaskGroup (1 sub-exception)"
+
 ## [2.2.2] - 2026-02-27
 
 ### Added
