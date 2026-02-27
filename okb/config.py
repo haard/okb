@@ -4,12 +4,37 @@ from __future__ import annotations
 
 import os
 import re
+import stat
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+
+
+class InsecureConfigError(Exception):
+    """Raised when a config file has overly permissive permissions."""
+
+
+def check_file_permissions(path: Path) -> None:
+    """Check that a config file is not readable by group/other (must be mode 0600).
+
+    Raises InsecureConfigError if permissions are too open.
+    """
+    mode = path.stat().st_mode
+    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        actual = stat.filemode(mode)
+        print(
+            f"WARNING: {path} has insecure permissions ({actual}).\n"
+            f"Config files may contain secrets and must not be readable by others.\n"
+            f"Fix with: chmod 600 {path}",
+            file=sys.stderr,
+        )
+        raise InsecureConfigError(
+            f"{path} has insecure permissions ({actual}). Run: chmod 600 {path}"
+        )
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -57,12 +82,23 @@ class DatabaseConfig:
     default: bool = False
     description: str | None = None  # Human-readable description for LLM context
     topics: list[str] | None = None  # Topic keywords to help LLM route queries
+    sources: dict[str, dict] | None = None  # Per-database source config (overrides global)
 
     @property
     def database_name(self) -> str:
         """Extract database name from URL."""
         parsed = urlparse(self.url)
         return parsed.path.lstrip("/") or self.name
+
+
+@dataclass
+class ServerConfig:
+    """Configuration for a remote MCP server."""
+
+    name: str
+    url: str
+    token: str | None = None
+    default: bool = False
 
 
 def get_config_dir() -> Path:
@@ -92,9 +128,13 @@ def get_snapshots_dir(database_name: str) -> Path:
 
 
 def load_config_file() -> dict[str, Any]:
-    """Load configuration from config file if it exists."""
+    """Load configuration from config file if it exists.
+
+    Raises InsecureConfigError if file permissions are too open.
+    """
     config_path = get_config_path()
     if config_path.exists():
+        check_file_permissions(config_path)
         with open(config_path) as f:
             return yaml.safe_load(f) or {}
     return {}
@@ -112,9 +152,13 @@ def find_local_config(start_path: Path | None = None) -> Path | None:
 
 
 def load_local_config() -> dict[str, Any]:
-    """Load local config overlay if present."""
+    """Load local config overlay if present.
+
+    Raises InsecureConfigError if file permissions are too open.
+    """
     local_path = find_local_config()
     if local_path:
+        check_file_permissions(local_path)
         with open(local_path) as f:
             return yaml.safe_load(f) or {}
     return {}
@@ -330,6 +374,10 @@ class Config:
     http_host: str = "127.0.0.1"
     http_port: int = 8080
 
+    # Remote servers (for okb client CLI)
+    servers: dict[str, ServerConfig] = field(default_factory=dict)
+    default_server: str | None = None
+
     # Embedding model
     model_name: str = "nomic-ai/nomic-embed-text-v1.5"
     embedding_dim: int = 768
@@ -374,14 +422,17 @@ class Config:
         # Load and merge local config overlay (.okbconf.yaml)
         local_path = find_local_config()
         local_default_db: str | None = None
+        local_default_server: str | None = None
         if local_path:
             self.local_config_path = local_path
             local_config = load_local_config()
             file_config = merge_configs(file_config, local_config)
 
-            # Save local config's default_database to apply after database loading
+            # Save local config's defaults to apply after database/server loading
             if "default_database" in local_config:
                 local_default_db = local_config["default_database"]
+            if "default_server" in local_config:
+                local_default_server = local_config["default_server"]
 
         # Merge extension/security lists with defaults so local config extends defaults
         # (not just global config file which may be empty)
@@ -416,6 +467,7 @@ class Config:
                     default=db_cfg.get("default", False),
                     description=db_cfg.get("description"),
                     topics=db_cfg.get("topics"),
+                    sources=db_cfg.get("sources"),
                 )
                 if db_cfg.get("default"):
                     default_dbs.append(name)
@@ -482,6 +534,69 @@ class Config:
                 http_cfg.get("port", DEFAULTS["http"]["port"]),
             )
         )
+
+        # Remote server settings (for okb client CLI)
+        if "servers" in file_config:
+            default_servers = []
+            for sname, srv_cfg in file_config["servers"].items():
+                token_raw = srv_cfg.get("token")
+                token_val = None
+                if token_raw:
+                    try:
+                        token_val = resolve_env_vars(token_raw)
+                    except ValueError:
+                        token_val = token_raw
+                self.servers[sname] = ServerConfig(
+                    name=sname,
+                    url=srv_cfg["url"],
+                    token=token_val,
+                    default=srv_cfg.get("default", False),
+                )
+                if srv_cfg.get("default"):
+                    default_servers.append(sname)
+                    self.default_server = sname
+            if len(default_servers) > 1:
+                raise ValueError(
+                    f"Multiple servers marked as default: {default_servers}. "
+                    "Only one server can have 'default: true'."
+                )
+            if not self.default_server and self.servers:
+                first_name = next(iter(self.servers))
+                self.servers[first_name].default = True
+                self.default_server = first_name
+
+        # Apply local config's default_server override
+        if local_default_server:
+            self.default_server = local_default_server
+
+        # Env var overrides apply to the default server
+        env_url = os.environ.get("OKB_SERVER_URL")
+        env_token_raw = os.environ.get("OKB_TOKEN")
+        if env_url or env_token_raw:
+            if self.default_server and self.default_server in self.servers:
+                sc = self.servers[self.default_server]
+                if env_url:
+                    sc.url = env_url
+                if env_token_raw:
+                    try:
+                        sc.token = resolve_env_vars(env_token_raw)
+                    except ValueError:
+                        sc.token = env_token_raw
+            elif env_url:
+                # No servers configured yet — create one from env vars
+                token_val = None
+                if env_token_raw:
+                    try:
+                        token_val = resolve_env_vars(env_token_raw)
+                    except ValueError:
+                        token_val = env_token_raw
+                self.servers["default"] = ServerConfig(
+                    name="default",
+                    url=env_url,
+                    token=token_val,
+                    default=True,
+                )
+                self.default_server = "default"
 
         # Embedding settings
         embedding_cfg = file_config.get("embedding", {})
@@ -567,6 +682,20 @@ class Config:
             raise ValueError(f"Unknown database: {name}. Available: {list(self.databases.keys())}")
         return self.databases[name]
 
+    def get_server(self, name: str | None = None) -> ServerConfig:
+        """Get server config by name, or default if None."""
+        if name is None:
+            name = self.default_server
+        if name is None:
+            raise ValueError(
+                "No server configured. Add servers: to config or set OKB_SERVER_URL."
+            )
+        if name not in self.servers:
+            raise ValueError(
+                f"Unknown server: {name}. Available: {list(self.servers.keys())}"
+            )
+        return self.servers[name]
+
     @property
     def db_url(self) -> str:
         """Backward compat: return default database URL."""
@@ -580,13 +709,34 @@ class Config:
         """Check if a path should be skipped during collection."""
         return any(part.startswith(".") or part in self.skip_directories for part in path.parts)
 
-    def get_source_config(self, source_name: str) -> dict | None:
+    def _get_sources_for_db(self, db_name: str | None) -> dict[str, dict]:
+        """Get the effective source config dict for a database.
+
+        If the database has per-db sources defined for a given source name,
+        those replace the global config entirely (no deep merge).
+        Sources not defined at db level fall back to global plugin_sources.
+        """
+        if db_name:
+            db_cfg = self.databases.get(db_name)
+            if db_cfg and db_cfg.sources:
+                # Start with global, then overlay per-db sources (full replacement per source)
+                merged = dict(self.plugin_sources)
+                merged.update(db_cfg.sources)
+                return merged
+        return self.plugin_sources
+
+    def get_source_config(self, source_name: str, db_name: str | None = None) -> dict | None:
         """Get resolved config for a plugin source.
+
+        If db_name is given and the database defines config for this source,
+        that config replaces the global config entirely. Otherwise falls back
+        to global plugin_sources.
 
         Resolves ${ENV_VAR} references in the config values.
         Returns None if source not configured or disabled.
         """
-        source_cfg = self.plugin_sources.get(source_name)
+        sources = self._get_sources_for_db(db_name)
+        source_cfg = sources.get(source_name)
         if source_cfg is None:
             return None
         if not source_cfg.get("enabled", True):
@@ -596,9 +746,10 @@ class Config:
         except ValueError as e:
             raise ValueError(f"Error resolving config for source '{source_name}': {e}") from e
 
-    def list_enabled_sources(self) -> list[str]:
-        """List all enabled plugin sources."""
-        return [name for name, cfg in self.plugin_sources.items() if cfg.get("enabled", True)]
+    def list_enabled_sources(self, db_name: str | None = None) -> list[str]:
+        """List all enabled plugin sources for a database (or global)."""
+        sources = self._get_sources_for_db(db_name)
+        return [name for name, cfg in sources.items() if cfg.get("enabled", True)]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for display."""
@@ -613,12 +764,26 @@ class Config:
                 db_dict["description"] = db_cfg.description
             if db_cfg.topics:
                 db_dict["topics"] = db_cfg.topics
+            if db_cfg.sources:
+                db_dict["sources"] = {
+                    sname: {**scfg, "token": "***" if "token" in scfg else None}
+                    for sname, scfg in db_cfg.sources.items()
+                }
             databases_dict[name] = db_dict
 
         result: dict[str, Any] = {}
         if self.local_config_path:
             result["local_config"] = str(self.local_config_path)
         result["databases"] = databases_dict
+        if self.servers:
+            result["servers"] = {
+                sname: {
+                    "url": sc.url,
+                    "token": "***" if sc.token else None,
+                    "default": sc.default,
+                }
+                for sname, sc in self.servers.items()
+            }
         return {
             **result,
             "docker": {
@@ -675,9 +840,140 @@ class Config:
 
 
 def get_default_config_yaml() -> str:
-    """Get the default config as YAML string."""
-    return yaml.dump(DEFAULTS, default_flow_style=False, sort_keys=False)
+    """Get the default config template with all values commented out."""
+    return """\
+# OKB configuration
+# Uncomment and modify values to override defaults.
+# Environment variables take precedence over this file.
+
+# --- Databases ---
+# Multiple knowledge bases can be configured. Only one can be default.
+# databases:
+#   default:
+#     url: postgresql://knowledge:localdev@localhost:5433/knowledge_base
+#     default: true
+#     managed: true              # okb manages via Docker container
+#     description: "Personal notes and documents"
+#     topics: [notes, journal]
+#   work:
+#     url: postgresql://knowledge:localdev@localhost:5433/work_kb
+#     managed: true
+#     description: "Work projects and documentation"
+#     topics: [work, projects]
+
+# --- Docker (pgvector container) ---
+# docker:
+#   port: 5433
+#   container_name: okb-pgvector
+#   volume_name: okb-pgvector-data
+#   password: localdev
+
+# --- HTTP server ---
+# http:
+#   host: 127.0.0.1
+#   port: 8080
+
+# --- Remote servers (for okb client CLI) ---
+# Env vars OKB_SERVER_URL / OKB_TOKEN override the default server.
+# servers:
+#   personal:
+#     url: http://localhost:8080/mcp
+#     token: ${OKB_PERSONAL_TOKEN}
+#     default: true
+#   work:
+#     url: http://work-host:8080/mcp
+#     token: ${OKB_WORK_TOKEN}
+
+# --- Embedding model ---
+# embedding:
+#   model_name: nomic-ai/nomic-embed-text-v1.5
+#   dimension: 768
+
+# --- Chunking ---
+# chunking:
+#   chunk_size: 512              # tokens per chunk
+#   chunk_overlap: 64            # overlap between chunks
+#   chars_per_token: 4
+
+# --- Search ---
+# search:
+#   default_limit: 5
+#   max_limit: 20
+#   min_similarity: 0.3
+
+# --- File extensions ---
+# Local config (.okbconf.yaml) extends these lists rather than replacing them.
+# extensions:
+#   documents: [.md, .txt, .markdown, .org, .pdf, .docx]
+#   code: [.py, .rb, .js, .ts, .jsx, .tsx, .sql, .sh, .bash, .fish,
+#          .yaml, .yml, .toml, .json, .html, .css, .scss,
+#          .go, .rs, .java, .kt, .c, .cpp, .h]
+#   skip_directories: [.git, node_modules, __pycache__, .venv, venv,
+#                      dist, build, vendor]
+
+# --- Security ---
+# security:
+#   scan_content: true
+#   max_line_length_for_minified: 1000
+#   block_patterns:              # sensitive files, always skipped
+#     - "*.pem"
+#     - "*.key"
+#     - ".env"
+#     - ".env.*"
+#   skip_patterns:               # low-value files
+#     - "*.min.js"
+#     - "package-lock.json"
+#     - "poetry.lock"
+
+# --- Plugins (API sources) ---
+# Token values support ${ENV_VAR} and ${ENV_VAR:-default} syntax.
+# plugins:
+#   sources:
+#     github:
+#       enabled: true
+#       token: ${GITHUB_TOKEN}
+#     todoist:
+#       enabled: true
+#       token: ${TODOIST_TOKEN}
+#       include_completed: false
+#       completed_days: 30
+#     dropbox-paper:
+#       enabled: true
+#       app_key: ${DROPBOX_APP_KEY}
+#       app_secret: ${DROPBOX_APP_SECRET}
+#       refresh_token: ${DROPBOX_REFRESH_TOKEN}
+#       folders: [/]
+
+# --- LLM (for synthesis and classification) ---
+# llm:
+#   provider: claude              # claude, modal, or null (disabled)
+#   model: claude-haiku-4-5-20251001
+#   timeout: 30
+#   cache_responses: true
+#   use_bedrock: false
+#   aws_region: us-west-2
+"""
 
 
-# Global config instance
-config = Config()
+class _LazyConfig:
+    """Lazy proxy that defers Config() instantiation until first attribute access."""
+
+    def __init__(self):
+        object.__setattr__(self, "_instance", None)
+
+    def _get(self) -> Config:
+        inst = object.__getattribute__(self, "_instance")
+        if inst is None:
+            inst = Config()
+            object.__setattr__(self, "_instance", inst)
+        return inst
+
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._get(), name, value)
+
+
+# Global config instance (lazily initialized on first access)
+config: Config = _LazyConfig()  # type: ignore[assignment]

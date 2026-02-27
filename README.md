@@ -123,6 +123,11 @@ Environment variables override config file settings:
 - `OKB_DATABASE_URL` - Database connection string
 - `OKB_DOCKER_PORT` - Docker port mapping
 - `OKB_CONTAINER_NAME` - Docker container name
+- `OKB_SERVER_URL` - Remote server URL (overrides default server)
+- `OKB_TOKEN` - Remote server token (overrides default server)
+
+**Config file permissions**: Config files must be mode 0600 (not readable by group/other)
+since they may contain secrets. OKB checks on load and errors if too open.
 
 ### Project-Local Config
 
@@ -138,6 +143,46 @@ extensions:
 ```
 
 Merge: scalars replace, lists extend, dicts deep-merge.
+
+### Remote Servers (Client Mode)
+
+Connect to remote OKB HTTP servers:
+
+```yaml
+servers:
+  personal:
+    url: http://localhost:8080/mcp
+    token: ${OKB_PERSONAL_TOKEN}
+    default: true
+  work:
+    url: http://work-host:8080/mcp
+    token: ${OKB_WORK_TOKEN}
+```
+
+Only one server can be `default: true`. If none is marked, the first is used.
+
+Local config can override the default server per-project:
+```yaml
+# .okbconf.yaml
+default_server: work
+```
+
+### Per-Database Source Overrides
+
+Databases can override global plugin source configs (full replacement per source, no merge):
+
+```yaml
+databases:
+  work:
+    url: postgresql://...
+    managed: true
+    sources:
+      github:
+        enabled: true
+        token: ${WORK_GITHUB_TOKEN}
+      todoist:
+        enabled: false
+```
 
 ### LLM Integration (Optional)
 

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-02-27
+
+### Added
+- Named remote server configs (`servers:` block in config) with `ServerConfig` dataclass
+- `Config.get_server(name)` to resolve server by name or default
+- `default_server` support in local config overlay (`.okbconf.yaml`)
+- Environment variable overrides `OKB_SERVER_URL` and `OKB_TOKEN` for the default server
+- Per-database source config overrides (`databases.*.sources`), full replacement per source
+- `db_name` parameter on `Config.get_source_config()` and `Config.list_enabled_sources()`
+- Config file permission checking — files must be mode 0600 (`InsecureConfigError` on violation)
+- `okb config init` now generates a fully commented template instead of raw defaults
+
+### Changed
+- Global `config` instance is now lazily initialized via `_LazyConfig` proxy
+- `get_default_config_yaml()` returns commented YAML template
+
+### Fixed
+- `local_default_server` was referenced outside the `if local_path:` scope (safe at runtime
+  due to short-circuit, but fragile); moved extraction into the block alongside `local_default_db`
+
 ## [2.0.0] - 2026-02-13
 
 ### Added

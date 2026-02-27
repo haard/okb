@@ -520,6 +520,7 @@ async def execute_tool(
                 full=arguments.get("full", False),
                 doc_ids=arguments.get("doc_ids"),
                 repos=arguments.get("repos"),
+                db_name=db_name,
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 

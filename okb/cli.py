@@ -14,7 +14,13 @@ from pathlib import Path
 import click
 import yaml
 
-from .config import config, get_config_dir, get_config_path, get_default_config_yaml
+from .config import (
+    InsecureConfigError,
+    config,
+    get_config_dir,
+    get_config_path,
+    get_default_config_yaml,
+)
 
 
 @click.group()
@@ -699,6 +705,7 @@ def config_init(force: bool):
     config_dir.mkdir(parents=True, exist_ok=True)
 
     config_path.write_text(get_default_config_yaml())
+    config_path.chmod(0o600)
     click.echo(f"Created config file at {config_path}")
 
 
@@ -1062,6 +1069,7 @@ def _apply_llm_filter(documents: list, filter_cfg: dict, source_name: str) -> li
 @click.option("--folder", multiple=True, help="Filter to specific folder path (can repeat)")
 @click.option("--doc", "doc_ids", multiple=True, help="Sync specific document ID (can repeat)")
 # GitHub-specific options
+@click.option("--channel", multiple=True, help="Slack channel ID to sync (can repeat)")
 @click.option("--repo", multiple=True, help="GitHub repo to sync (owner/repo, can repeat)")
 @click.option(
     "--source", "include_source", is_flag=True, help="Sync all source files (not just README+docs)"
@@ -1079,6 +1087,7 @@ def sync_run(
     database: str | None,
     folder: tuple[str, ...],
     doc_ids: tuple[str, ...],
+    channel: tuple[str, ...],
     repo: tuple[str, ...],
     include_source: bool,
     include_issues: bool,
@@ -1101,7 +1110,7 @@ def sync_run(
 
     # Determine which sources to sync
     if sync_all:
-        source_names = config.list_enabled_sources()
+        source_names = config.list_enabled_sources(db_cfg.name)
     elif sources:
         source_names = list(sources)
     else:
@@ -1125,8 +1134,8 @@ def sync_run(
                 click.echo(f"Installed sources: {', '.join(PluginRegistry.list_sources())}")
                 continue
 
-            # Get and resolve config
-            source_cfg = config.get_source_config(source_name)
+            # Get and resolve config (per-db sources override global)
+            source_cfg = config.get_source_config(source_name, db_cfg.name)
             if source_cfg is None:
                 click.echo(f"Skipping '{source_name}': not configured or disabled", err=True)
                 continue
@@ -1136,6 +1145,9 @@ def sync_run(
                 source_cfg["folders"] = list(folder)
             if doc_ids:
                 source_cfg["doc_ids"] = list(doc_ids)
+            # Slack-specific options
+            if channel:
+                source_cfg["channels"] = list(channel)
             # GitHub-specific options
             if repo:
                 source_cfg["repos"] = list(repo)
@@ -1191,12 +1203,15 @@ def sync_run(
 
 
 @sync.command("list")
-def sync_list():
+@click.option("--db", "database", default=None, help="Show sources for specific database")
+@click.pass_context
+def sync_list(ctx, database: str | None):
     """List available API sources."""
     from .plugins.registry import PluginRegistry
 
+    db_name = database or ctx.obj.get("database")
     installed = PluginRegistry.list_sources()
-    configured = config.list_enabled_sources()
+    configured = config.list_enabled_sources(db_name)
 
     click.echo("Installed sources:")
     if installed:
@@ -1216,12 +1231,16 @@ def sync_list():
 
 @sync.command("list-projects")
 @click.argument("source")
-def sync_list_projects(source: str):
+@click.option("--db", "database", default=None, help="Use source config from specific database")
+@click.pass_context
+def sync_list_projects(ctx, source: str, database: str | None):
     """List projects from an API source (for finding project IDs).
 
     Example: okb sync list-projects todoist
     """
     from .plugins.registry import PluginRegistry
+
+    db_name = database or ctx.obj.get("database")
 
     # Get the plugin
     source_obj = PluginRegistry.get_source(source)
@@ -1235,8 +1254,8 @@ def sync_list_projects(source: str):
         click.echo(f"Error: Source '{source}' does not support listing projects.", err=True)
         sys.exit(1)
 
-    # Get and resolve config
-    source_cfg = config.get_source_config(source)
+    # Get and resolve config (per-db sources override global)
+    source_cfg = config.get_source_config(source, db_name)
     if source_cfg is None:
         click.echo(f"Error: Source '{source}' not configured.", err=True)
         click.echo("Add it to your config file under plugins.sources")
@@ -2345,5 +2364,14 @@ def service_logs(follow: bool, lines: int):
         pass
 
 
+def entry_point():
+    """Entry point that catches InsecureConfigError for clean exit."""
+    try:
+        main()
+    except InsecureConfigError:
+        # Warning already printed to stderr by check_file_permissions
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    entry_point()

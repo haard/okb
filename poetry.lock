@@ -4989,15 +4989,16 @@ test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_it
 type = ["pytest-mypy"]
 
 [extras]
-all = ["anthropic", "pymupdf", "python-docx", "todoist-api-python", "trafilatura"]
+all = ["anthropic", "pymupdf", "python-docx", "requests", "todoist-api-python", "trafilatura"]
 docx = ["python-docx"]
 llm = ["anthropic"]
 llm-bedrock = ["anthropic", "boto3", "botocore"]
 pdf = ["pymupdf"]
+slack = ["requests"]
 todoist = ["todoist-api-python"]
 web = ["trafilatura"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "1eee71940a22b8ea86c17bf76a33d5288ddb8c427222dd725cb7408045823ef8"
+content-hash = "75722bb336cababe35aff419d9bf74848abed3f99730b83790622a4398930308"

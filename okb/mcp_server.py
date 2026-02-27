@@ -862,6 +862,7 @@ def _run_sync(
     full: bool = False,
     doc_ids: list[str] | None = None,
     repos: list[str] | None = None,
+    db_name: str | None = None,
 ) -> str:
     """Run sync for specified sources and return formatted result."""
     from psycopg.rows import dict_row
@@ -869,15 +870,19 @@ def _run_sync(
     from .ingest import Ingester
     from .plugins.registry import PluginRegistry
 
+    # Resolve db_name for source config lookup and sync state
+    if db_name is None:
+        db_name = config.get_database().name
+
     # Determine which sources to sync
     if sync_all:
-        source_names = config.list_enabled_sources()
+        source_names = config.list_enabled_sources(db_name)
     elif sources:
         source_names = list(sources)
     else:
         # Return list of available sources
         installed = PluginRegistry.list_sources()
-        configured = config.list_enabled_sources()
+        configured = config.list_enabled_sources(db_name)
         lines = ["Available API sources:"]
         for name in installed:
             status = "enabled" if name in configured else "disabled"
@@ -888,9 +893,6 @@ def _run_sync(
 
     if not source_names:
         return "No sources to sync."
-
-    # Get database name from URL for sync state
-    db_name = config.get_database().name
 
     results = []
     ingester = Ingester(db_url, use_modal=True)
@@ -903,8 +905,8 @@ def _run_sync(
                 results.append(f"{source_name}: not found")
                 continue
 
-            # Get and resolve config
-            source_cfg = config.get_source_config(source_name)
+            # Get and resolve config (per-db sources override global)
+            source_cfg = config.get_source_config(source_name, db_name)
             if source_cfg is None:
                 results.append(f"{source_name}: not configured or disabled")
                 continue
@@ -996,7 +998,7 @@ def _list_sync_sources(db_url: str, db_name: str) -> str:
     from .plugins.registry import PluginRegistry
 
     installed = PluginRegistry.list_sources()
-    enabled = set(config.list_enabled_sources())
+    enabled = set(config.list_enabled_sources(db_name))
 
     if not installed:
         return "No API sync sources installed."
