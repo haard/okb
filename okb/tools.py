@@ -524,6 +524,7 @@ async def execute_tool(
                     full=arguments.get("full", False),
                     doc_ids=arguments.get("doc_ids"),
                     repos=arguments.get("repos"),
+                    branch=arguments.get("branch"),
                     db_name=db_name,
                 )
             )

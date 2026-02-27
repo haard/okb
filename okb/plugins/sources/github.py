@@ -109,6 +109,7 @@ class GitHubSource:
         self._client: Github | None = None
         self._token: str | None = None
         self._repos: list[str] = []
+        self._branch: str | None = None
         self._include_source: bool = False
         self._include_issues: bool = False
         self._include_prs: bool = False
@@ -133,6 +134,7 @@ class GitHubSource:
         self._client = Github(token)
         self._token = token
         self._repos = repos
+        self._branch = config.get("branch")
         self._include_source = config.get("include_source", False)
         self._include_issues = config.get("include_issues", False)
         self._include_prs = config.get("include_prs", False)
@@ -209,8 +211,8 @@ class GitHubSource:
         documents: list[Document] = []
 
         # Get current HEAD commit
-        default_branch = repo.default_branch
-        current_sha = repo.get_branch(default_branch).commit.sha
+        branch = self._branch or repo.default_branch
+        current_sha = repo.get_branch(branch).commit.sha
 
         # Skip if no changes
         if last_sha == current_sha:
@@ -244,7 +246,7 @@ class GitHubSource:
 
                 title = path.split("/")[-1]
                 doc = Document(
-                    source_path=f"github://{repo.full_name}/blob/{default_branch}/{path}",
+                    source_path=f"github://{repo.full_name}/blob/{branch}/{path}",
                     source_type="github-source",
                     title=title,
                     content=content,

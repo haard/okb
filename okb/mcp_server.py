@@ -862,6 +862,7 @@ def _run_sync(
     full: bool = False,
     doc_ids: list[str] | None = None,
     repos: list[str] | None = None,
+    branch: str | None = None,
     db_name: str | None = None,
 ) -> str:
     """Run sync for specified sources and return formatted result."""
@@ -918,6 +919,10 @@ def _run_sync(
             # Inject repos if provided (for github source)
             if repos:
                 source_cfg = {**source_cfg, "repos": repos}
+
+            # Inject branch if provided (for github source)
+            if branch:
+                source_cfg = {**source_cfg, "branch": branch}
 
             try:
                 source.configure(source_cfg)
@@ -1908,6 +1913,13 @@ async def list_tools() -> list[Tool]:
                         "description": (
                             "GitHub repos to sync (owner/repo format, can specify multiple). "
                             "Required for github source if not pre-configured in config."
+                        ),
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": (
+                            "Git branch to sync (default: repo default branch). "
+                            "Applies to github source."
                         ),
                     },
                 },

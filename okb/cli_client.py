@@ -214,7 +214,11 @@ def sync():
 @click.option("--all", "sync_all", is_flag=True, help="Sync all enabled sources")
 @click.option("--full", is_flag=True, help="Full sync (ignore incremental state)")
 @click.option("--repo", multiple=True, help="GitHub repo (owner/repo, can repeat)")
-def sync_run(sources: tuple[str, ...], sync_all: bool, full: bool, repo: tuple[str, ...]):
+@click.option("--branch", default=None, help="Git branch to sync (default: repo default)")
+def sync_run(
+    sources: tuple[str, ...], sync_all: bool, full: bool, repo: tuple[str, ...],
+    branch: str | None,
+):
     """Trigger sync for API sources."""
     args: dict = {}
     if sources:
@@ -225,6 +229,8 @@ def sync_run(sources: tuple[str, ...], sync_all: bool, full: bool, repo: tuple[s
         args["full"] = True
     if repo:
         args["repos"] = list(repo)
+    if branch:
+        args["branch"] = branch
     _call("trigger_sync", args)
 
 

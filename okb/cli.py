@@ -1078,6 +1078,7 @@ def _apply_llm_filter(documents: list, filter_cfg: dict, source_name: str) -> li
 @click.option("--issues", "include_issues", is_flag=True, help="Include GitHub issues")
 @click.option("--prs", "include_prs", is_flag=True, help="Include GitHub pull requests")
 @click.option("--wiki", "include_wiki", is_flag=True, help="Include GitHub wiki pages")
+@click.option("--branch", default=None, help="Git branch to sync (default: repo default)")
 @click.pass_context
 def sync_run(
     ctx,
@@ -1094,6 +1095,7 @@ def sync_run(
     include_issues: bool,
     include_prs: bool,
     include_wiki: bool,
+    branch: str | None,
 ):
     """Sync from API sources.
 
@@ -1152,6 +1154,8 @@ def sync_run(
             # GitHub-specific options
             if repo:
                 source_cfg["repos"] = list(repo)
+            if branch:
+                source_cfg["branch"] = branch
             if include_source:
                 source_cfg["include_source"] = True
             if include_issues:
