@@ -34,6 +34,14 @@ def _get_client(server_name: str | None = None) -> OKBClient:
     return OKBClient(sc.url, sc.token)
 
 
+def _unwrap_exception(e: BaseException) -> str:
+    """Extract a readable message from an exception, unwrapping ExceptionGroups."""
+    if isinstance(e, BaseExceptionGroup):
+        msgs = [_unwrap_exception(sub) for sub in e.exceptions]
+        return "; ".join(msgs)
+    return str(e)
+
+
 def _call(name: str, arguments: dict | None = None) -> None:
     """Call a tool and print the result."""
     ctx = click.get_current_context()
@@ -44,6 +52,9 @@ def _call(name: str, arguments: dict | None = None) -> None:
         click.echo(result)
     except SystemExit:
         raise
+    except BaseExceptionGroup as eg:
+        click.echo(f"Error: {_unwrap_exception(eg)}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

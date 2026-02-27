@@ -6,7 +6,9 @@ Contains the canonical execute_tool() function used by both the stdio
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from mcp.types import CallToolResult, TextContent
@@ -513,24 +515,30 @@ async def execute_tool(
         elif name == "trigger_sync":
             from .mcp_server import _run_sync
 
-            result = _run_sync(
-                kb.db_url,
-                sources=arguments.get("sources", []),
-                sync_all=arguments.get("all", False),
-                full=arguments.get("full", False),
-                doc_ids=arguments.get("doc_ids"),
-                repos=arguments.get("repos"),
-                db_name=db_name,
+            result = await asyncio.to_thread(
+                partial(
+                    _run_sync,
+                    kb.db_url,
+                    sources=arguments.get("sources", []),
+                    sync_all=arguments.get("all", False),
+                    full=arguments.get("full", False),
+                    doc_ids=arguments.get("doc_ids"),
+                    repos=arguments.get("repos"),
+                    db_name=db_name,
+                )
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "trigger_rescan":
             from .mcp_server import _run_rescan
 
-            result = _run_rescan(
-                kb.db_url,
-                dry_run=arguments.get("dry_run", False),
-                delete_missing=arguments.get("delete_missing", False),
+            result = await asyncio.to_thread(
+                partial(
+                    _run_rescan,
+                    kb.db_url,
+                    dry_run=arguments.get("dry_run", False),
+                    delete_missing=arguments.get("delete_missing", False),
+                )
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
@@ -555,11 +563,14 @@ async def execute_tool(
         elif name == "synthesize_knowledge":
             from .mcp_server import _synthesize_knowledge
 
-            result = _synthesize_knowledge(
-                kb.db_url,
-                project=arguments.get("project"),
-                sample_size=arguments.get("sample_size", 25),
-                max_proposals=arguments.get("max_proposals", 10),
+            result = await asyncio.to_thread(
+                partial(
+                    _synthesize_knowledge,
+                    kb.db_url,
+                    project=arguments.get("project"),
+                    sample_size=arguments.get("sample_size", 25),
+                    max_proposals=arguments.get("max_proposals", 10),
+                )
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
@@ -604,11 +615,14 @@ async def execute_tool(
         elif name == "analyze_knowledge_base":
             from .mcp_server import _analyze_knowledge_base
 
-            result = _analyze_knowledge_base(
-                kb.db_url,
-                project=arguments.get("project"),
-                sample_size=arguments.get("sample_size", 15),
-                auto_update=arguments.get("auto_update", True),
+            result = await asyncio.to_thread(
+                partial(
+                    _analyze_knowledge_base,
+                    kb.db_url,
+                    project=arguments.get("project"),
+                    sample_size=arguments.get("sample_size", 15),
+                    auto_update=arguments.get("auto_update", True),
+                )
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
