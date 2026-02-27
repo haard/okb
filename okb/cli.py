@@ -16,6 +16,7 @@ import yaml
 
 from .config import (
     InsecureConfigError,
+    check_file_permissions,
     config,
     get_config_dir,
     get_config_path,
@@ -2152,6 +2153,12 @@ WantedBy=default.target
 """
 
 
+def _get_env_file_path() -> Path:
+    """Get the path to the environment file for systemd services."""
+    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "okb"
+    return config_dir / "env"
+
+
 def _generate_http_service(okb_path: str) -> str:
     """Generate okb.service content."""
     # Build a minimal PATH with essential directories
@@ -2175,6 +2182,7 @@ def _generate_http_service(okb_path: str) -> str:
             essential_paths.append(fallback)
 
     path_dirs = ":".join(essential_paths)
+    env_file = _get_env_file_path()
 
     return f"""[Unit]
 Description=OKB Knowledge Base HTTP Server
@@ -2187,6 +2195,7 @@ ExecStart={okb_path} serve --http
 Restart=on-failure
 RestartSec=5
 Environment=PATH={path_dirs}
+EnvironmentFile=-{env_file}
 
 [Install]
 WantedBy=default.target
@@ -2220,6 +2229,23 @@ def service_install(no_start: bool):
 
     db_service_path = systemd_dir / "okb-db.service"
     http_service_path = systemd_dir / "okb.service"
+
+    # Create environment file template if it doesn't exist
+    env_file = _get_env_file_path()
+    if not env_file.exists():
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text(
+            "# Environment variables for OKB systemd services.\n"
+            "# Uncomment and set values as needed.\n"
+            "#ANTHROPIC_API_KEY=sk-ant-...\n"
+            "#TODOIST_TOKEN=\n"
+            "#GITHUB_TOKEN=\n"
+        )
+        env_file.chmod(0o600)
+        click.echo(f"Created environment file: {env_file}")
+        click.echo("  Edit this file to set API keys for the service.")
+    else:
+        check_file_permissions(env_file)
 
     # Write service files
     click.echo(f"Installing service files to {systemd_dir}")
