@@ -203,6 +203,114 @@ def rescan():
     _call("trigger_rescan")
 
 
+@main.command()
+@click.argument("paths", nargs=-1, required=True)
+@click.option("--metadata", "-m", default="{}", help="JSON metadata to attach")
+@click.option("--project", default=None, help="Project name for all documents")
+def ingest(paths: tuple[str, ...], metadata: str, project: str | None):
+    """Ingest local files into the remote knowledge base.
+
+    Parses files locally, sends to server for chunking and embedding.
+
+    Example: okb ingest ~/notes/ --project personal
+    """
+    import json as json_module
+    from pathlib import Path
+
+    from .config import config as app_config
+    from .ingest import (
+        check_file_skip,
+        collect_documents,
+        is_text_file,
+        is_url,
+        parse_document,
+        parse_url,
+    )
+
+    try:
+        extra_metadata = json_module.loads(metadata)
+    except json_module.JSONDecodeError as e:
+        click.echo(f"Error parsing metadata JSON: {e}", err=True)
+        sys.exit(1)
+
+    if project:
+        extra_metadata["project"] = project
+
+    documents = []
+    for path_str in paths:
+        if is_url(path_str):
+            click.echo(f"Fetching: {path_str}")
+            try:
+                documents.append(parse_url(path_str, extra_metadata))
+            except Exception as e:
+                click.echo(f"Error fetching URL: {e}", err=True)
+            continue
+
+        path = Path(path_str).resolve()
+        if path.is_dir():
+            documents.extend(collect_documents(path, extra_metadata))
+        elif path.is_file():
+            skip_check = check_file_skip(path)
+            if skip_check.should_skip:
+                prefix = "BLOCKED" if skip_check.is_security else "Skipping"
+                click.echo(f"{prefix}: {path} ({skip_check.reason})", err=True)
+                continue
+
+            if path.suffix in app_config.all_extensions or path.suffix in (
+                ".pdf", ".docx",
+            ):
+                try:
+                    documents.extend(parse_document(path, extra_metadata))
+                except ValueError as e:
+                    click.echo(f"Skipping: {e}", err=True)
+                    continue
+            elif is_text_file(path):
+                click.echo(f"Parsing as text: {path}")
+                documents.extend(
+                    parse_document(path, extra_metadata, force=True)
+                )
+            else:
+                click.echo(f"Skipping binary file: {path}", err=True)
+        else:
+            click.echo(f"Not found: {path_str}", err=True)
+
+    if not documents:
+        click.echo("No documents found to ingest.")
+        return
+
+    click.echo(f"Found {len(documents)} document(s), sending to server...")
+
+    serialized = [doc.to_dict() for doc in documents]
+    batch_size = 20
+    ctx = click.get_current_context()
+    server_name = ctx.obj.get("server") if ctx.obj else None
+    client = _get_client(server_name)
+
+    total_sent = 0
+    try:
+        for i in range(0, len(serialized), batch_size):
+            batch = serialized[i : i + batch_size]
+            result = client.call_tool_sync(
+                "ingest_documents", {"documents": batch}
+            )
+            total_sent += len(batch)
+            click.echo(result)
+    except BaseExceptionGroup as eg:
+        click.echo(f"Error: {_unwrap_exception(eg)}", err=True)
+        click.echo(
+            f"  ({total_sent}/{len(documents)} sent before error)", err=True
+        )
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        click.echo(
+            f"  ({total_sent}/{len(documents)} sent before error)", err=True
+        )
+        sys.exit(1)
+
+    click.echo(f"Done! {total_sent} document(s) ingested.")
+
+
 @main.group()
 def sync():
     """Sync operations."""

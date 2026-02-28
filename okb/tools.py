@@ -530,6 +530,18 @@ async def execute_tool(
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
+        elif name == "ingest_documents":
+            from .mcp_server import _run_ingest
+
+            result = await asyncio.to_thread(
+                partial(
+                    _run_ingest,
+                    kb.db_url,
+                    arguments["documents"],
+                )
+            )
+            return CallToolResult(content=[TextContent(type="text", text=result)])
+
         elif name == "trigger_rescan":
             from .mcp_server import _run_rescan
 

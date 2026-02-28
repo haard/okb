@@ -995,6 +995,27 @@ def _run_rescan(
     return "\n".join(lines) if lines else "No indexed files found."
 
 
+def _run_ingest(db_url: str, documents_data: list[dict]) -> str:
+    """Ingest serialized documents and return formatted result."""
+    import io
+    from contextlib import redirect_stdout
+
+    from .ingest import Document, Ingester
+
+    documents = [Document.from_dict(d) for d in documents_data]
+    ingester = Ingester(db_url, use_modal=False)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ingester.ingest_documents(documents)
+
+    output = buf.getvalue().strip()
+    summary = f"Processed {len(documents)} document(s)."
+    if output:
+        return f"{summary}\n{output}"
+    return summary
+
+
 def _list_sync_sources(db_url: str, db_name: str) -> str:
     """List available sync sources with status and last sync time."""
     import psycopg
@@ -1946,6 +1967,48 @@ async def list_tools() -> list[Tool]:
                         "description": "Remove documents for files that no longer exist",
                     },
                 },
+            },
+        ),
+        Tool(
+            name="ingest_documents",
+            description=(
+                "Ingest pre-parsed documents into the knowledge base. "
+                "Documents should be serialized with source_path, source_type, "
+                "title, content, and optional metadata/sections. The server handles "
+                "chunking, embedding, and storage. Requires write permission."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "documents": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "source_path": {"type": "string"},
+                                "source_type": {"type": "string"},
+                                "title": {"type": "string"},
+                                "content": {"type": "string"},
+                                "metadata": {"type": "object"},
+                                "sections": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "due_date": {"type": "string"},
+                                "status": {"type": "string"},
+                                "priority": {"type": "integer"},
+                            },
+                            "required": [
+                                "source_path", "source_type", "title", "content",
+                            ],
+                        },
+                        "description": "Array of serialized Document objects",
+                    },
+                },
+                "required": ["documents"],
             },
         ),
         Tool(

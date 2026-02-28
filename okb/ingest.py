@@ -155,6 +155,18 @@ class DocumentMetadata:
             extra=extra,
         )
 
+    @classmethod
+    def from_dict(cls, d: dict) -> DocumentMetadata:
+        """Reconstruct from a serialized dict (inverse of to_dict)."""
+        known = {"tags", "project", "category", "status"}
+        return cls(
+            tags=d.get("tags", []),
+            project=d.get("project"),
+            category=d.get("category"),
+            status=d.get("status"),
+            extra={k: v for k, v in d.items() if k not in known},
+        )
+
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
         result = {}
@@ -188,6 +200,51 @@ class Document:
     event_end: datetime | None = None  # Calendar event end
     status: str | None = None  # 'pending', 'completed', 'cancelled', etc.
     priority: int | None = None  # 1-5 scale (1=highest)
+
+    def to_dict(self) -> dict:
+        """Serialize to JSON-compatible dict for remote transport."""
+        d: dict = {
+            "source_path": self.source_path,
+            "source_type": self.source_type,
+            "title": self.title,
+            "content": self.content,
+            "metadata": self.metadata.to_dict(),
+            "sections": self.sections,
+        }
+        if self.due_date is not None:
+            d["due_date"] = self.due_date.isoformat()
+        if self.event_start is not None:
+            d["event_start"] = self.event_start.isoformat()
+        if self.event_end is not None:
+            d["event_end"] = self.event_end.isoformat()
+        if self.status is not None:
+            d["status"] = self.status
+        if self.priority is not None:
+            d["priority"] = self.priority
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Document:
+        """Reconstruct from a serialized dict."""
+
+        def _parse_dt(s: str | None) -> datetime | None:
+            if s is None:
+                return None
+            return datetime.fromisoformat(s)
+
+        return cls(
+            source_path=d["source_path"],
+            source_type=d["source_type"],
+            title=d["title"],
+            content=d["content"],
+            metadata=DocumentMetadata.from_dict(d.get("metadata", {})),
+            sections=[(s[0], s[1]) for s in d.get("sections", [])],
+            due_date=_parse_dt(d.get("due_date")),
+            event_start=_parse_dt(d.get("event_start")),
+            event_end=_parse_dt(d.get("event_end")),
+            status=d.get("status"),
+            priority=d.get("priority"),
+        )
 
 
 @dataclass

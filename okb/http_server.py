@@ -60,6 +60,7 @@ WRITE_TOOLS = frozenset(
         "add_todo",
         "trigger_sync",
         "trigger_rescan",
+        "ingest_documents",
         "synthesize_knowledge",
         "approve_synthesis",
         "reject_synthesis",
