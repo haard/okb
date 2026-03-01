@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.3.0a1] - 2026-02-28
+## [2.3.0a2] - 2026-03-01
 
 ### Added
 - Remote ingestion via `ingest_documents` MCP tool — clients can parse files locally and send
@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `okb ingest` client CLI command for ingesting local files into a remote server
 - `Document.to_dict()` / `Document.from_dict()` serialization for remote transport
 - `--branch` option for GitHub sync to sync a specific branch instead of the default
+
+### Changed
+- Remote ingest uses Modal GPU embedding when available, falls back to local CPU
 
 ## [2.2.3] - 2026-02-27
 
