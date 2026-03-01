@@ -1003,7 +1003,7 @@ def _run_ingest(db_url: str, documents_data: list[dict]) -> str:
     from .ingest import Document, Ingester
 
     documents = [Document.from_dict(d) for d in documents_data]
-    ingester = Ingester(db_url, use_modal=False)
+    ingester = Ingester(db_url, use_modal=True)
 
     buf = io.StringIO()
     with redirect_stdout(buf):
