@@ -864,6 +864,12 @@ def _run_sync(
     repos: list[str] | None = None,
     branch: str | None = None,
     db_name: str | None = None,
+    include_issues: bool = False,
+    include_prs: bool = False,
+    include_wiki: bool = False,
+    include_source: bool = False,
+    folders: list[str] | None = None,
+    channels: list[str] | None = None,
 ) -> str:
     """Run sync for specified sources and return formatted result."""
     from psycopg.rows import dict_row
@@ -923,6 +929,24 @@ def _run_sync(
             # Inject branch if provided (for github source)
             if branch:
                 source_cfg = {**source_cfg, "branch": branch}
+
+            # Inject GitHub-specific options
+            if include_issues:
+                source_cfg = {**source_cfg, "include_issues": True}
+            if include_prs:
+                source_cfg = {**source_cfg, "include_prs": True}
+            if include_wiki:
+                source_cfg = {**source_cfg, "include_wiki": True}
+            if include_source:
+                source_cfg = {**source_cfg, "include_source": True}
+
+            # Inject folder filter (for dropbox-paper)
+            if folders:
+                source_cfg = {**source_cfg, "folders": folders}
+
+            # Inject channel filter (for slack)
+            if channels:
+                source_cfg = {**source_cfg, "channels": channels}
 
             try:
                 source.configure(source_cfg)
@@ -1942,6 +1966,37 @@ async def list_tools() -> list[Tool]:
                             "Git branch to sync (default: repo default branch). "
                             "Applies to github source."
                         ),
+                    },
+                    "include_issues": {
+                        "type": "boolean",
+                        "description": "Include GitHub issues in sync.",
+                    },
+                    "include_prs": {
+                        "type": "boolean",
+                        "description": "Include GitHub pull requests in sync.",
+                    },
+                    "include_wiki": {
+                        "type": "boolean",
+                        "description": "Include GitHub wiki pages in sync.",
+                    },
+                    "include_source": {
+                        "type": "boolean",
+                        "description": (
+                            "Sync all source files, not just README + docs/. "
+                            "Applies to github source."
+                        ),
+                    },
+                    "folders": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Filter to specific folder paths (for dropbox-paper)."
+                        ),
+                    },
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Slack channel IDs to sync.",
                     },
                 },
             },

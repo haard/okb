@@ -526,6 +526,12 @@ async def execute_tool(
                     repos=arguments.get("repos"),
                     branch=arguments.get("branch"),
                     db_name=db_name,
+                    include_issues=arguments.get("include_issues", False),
+                    include_prs=arguments.get("include_prs", False),
+                    include_wiki=arguments.get("include_wiki", False),
+                    include_source=arguments.get("include_source", False),
+                    folders=arguments.get("folders"),
+                    channels=arguments.get("channels"),
                 )
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])

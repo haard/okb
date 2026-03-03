@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0a3] - 2026-03-03
+
+### Changed
+- Client CLI `sync run` restructured as group with per-source subcommands (`github`,
+  `todoist`, `dropbox-paper`) — source-specific options now grouped under their subcommand
+- GitHub sync options (`--issues`, `--prs`, `--wiki`, `--source`) now available in client CLI
+- MCP `trigger_sync` tool accepts `include_issues`, `include_prs`, `include_wiki`,
+  `include_source`, `folders`, and `channels` parameters
+
 ## [2.3.0a2] - 2026-03-01
 
 ### Added

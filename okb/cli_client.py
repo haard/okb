@@ -317,28 +317,85 @@ def sync():
     pass
 
 
-@sync.command("run")
-@click.argument("sources", nargs=-1)
+@sync.group("run", invoke_without_command=True)
 @click.option("--all", "sync_all", is_flag=True, help="Sync all enabled sources")
 @click.option("--full", is_flag=True, help="Full sync (ignore incremental state)")
-@click.option("--repo", multiple=True, help="GitHub repo (owner/repo, can repeat)")
-@click.option("--branch", default=None, help="Git branch to sync (default: repo default)")
-def sync_run(
-    sources: tuple[str, ...], sync_all: bool, full: bool, repo: tuple[str, ...],
-    branch: str | None,
+@click.pass_context
+def sync_run(ctx, sync_all: bool, full: bool):
+    """Trigger sync for API sources.
+
+    Use a subcommand for source-specific options:
+
+    \b
+      okb sync run --all           Sync all enabled sources
+      okb sync run github [OPTS]   GitHub with --repo, --issues, etc.
+      okb sync run todoist         Todoist tasks
+      okb sync run dropbox-paper   Dropbox Paper docs
+    """
+    ctx.ensure_object(dict)
+    ctx.obj["full"] = full
+    if ctx.invoked_subcommand is None:
+        if sync_all:
+            args: dict = {"all": True}
+            if full:
+                args["full"] = True
+            _call("trigger_sync", args)
+        else:
+            click.echo(ctx.get_help())
+
+
+@sync_run.command("github")
+@click.option("--repo", multiple=True, required=True, help="Repo to sync (owner/repo, repeatable)")
+@click.option("--branch", default=None, help="Git branch (default: repo default)")
+@click.option("--issues", "include_issues", is_flag=True, help="Include issues")
+@click.option("--prs", "include_prs", is_flag=True, help="Include pull requests")
+@click.option("--wiki", "include_wiki", is_flag=True, help="Include wiki pages")
+@click.option("--source", "include_source", is_flag=True, help="All source files (not just docs)")
+@click.pass_context
+def sync_run_github(
+    ctx, repo: tuple[str, ...], branch: str | None,
+    include_issues: bool, include_prs: bool, include_wiki: bool, include_source: bool,
 ):
-    """Trigger sync for API sources."""
-    args: dict = {}
-    if sources:
-        args["sources"] = list(sources)
-    if sync_all:
-        args["all"] = True
-    if full:
+    """Sync GitHub repositories."""
+    args: dict = {"sources": ["github"], "repos": list(repo)}
+    if ctx.obj.get("full"):
         args["full"] = True
-    if repo:
-        args["repos"] = list(repo)
     if branch:
         args["branch"] = branch
+    if include_issues:
+        args["include_issues"] = True
+    if include_prs:
+        args["include_prs"] = True
+    if include_wiki:
+        args["include_wiki"] = True
+    if include_source:
+        args["include_source"] = True
+    _call("trigger_sync", args)
+
+
+@sync_run.command("todoist")
+@click.pass_context
+def sync_run_todoist(ctx):
+    """Sync Todoist tasks."""
+    args: dict = {"sources": ["todoist"]}
+    if ctx.obj.get("full"):
+        args["full"] = True
+    _call("trigger_sync", args)
+
+
+@sync_run.command("dropbox-paper")
+@click.option("--folder", multiple=True, help="Filter to folder path (repeatable)")
+@click.option("--doc", "doc_ids", multiple=True, help="Sync specific document ID (repeatable)")
+@click.pass_context
+def sync_run_dropbox_paper(ctx, folder: tuple[str, ...], doc_ids: tuple[str, ...]):
+    """Sync Dropbox Paper documents."""
+    args: dict = {"sources": ["dropbox-paper"]}
+    if ctx.obj.get("full"):
+        args["full"] = True
+    if folder:
+        args["folders"] = list(folder)
+    if doc_ids:
+        args["doc_ids"] = list(doc_ids)
     _call("trigger_sync", args)
 
 
