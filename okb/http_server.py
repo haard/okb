@@ -14,6 +14,7 @@ Transport: Streamable HTTP (RFC 9728 compliant)
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from typing import Any
 
@@ -98,6 +99,8 @@ class HTTPMCPServer:
         self.session_manager = StreamableHTTPSessionManager(app=self.server)
         # Map mcp-session-id -> token_info
         self.session_tokens: dict[str, TokenInfo] = {}
+        # Per-KB asyncio locks for connection safety
+        self.kb_locks: dict[str, asyncio.Lock] = {}
         self._setup_handlers()
 
     def _get_db_url(self, db_name: str) -> str:
@@ -118,9 +121,16 @@ class HTTPMCPServer:
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             """Handle tool invocations with permission checking."""
-            # Get auth context from the current request
-            # This is passed via the transport
-            token_info: TokenInfo | None = getattr(self.server, "_current_token_info", None)
+            # Look up auth context via the MCP request_context (per-task)
+            token_info: TokenInfo | None = None
+            try:
+                req = self.server.request_context.request
+                if req is not None:
+                    session_id = req.headers.get("mcp-session-id")
+                    if session_id:
+                        token_info = self.session_tokens.get(session_id)
+            except LookupError:
+                pass
 
             if token_info is None:
                 return CallToolResult(
@@ -138,18 +148,21 @@ class HTTPMCPServer:
                     ]
                 )
 
-            # Get or create knowledge base for this database
-            if token_info.database not in self.knowledge_bases:
-                db_url = self._get_db_url(token_info.database)
-                self.knowledge_bases[token_info.database] = KnowledgeBase(db_url)
+            # Get or create knowledge base and lock for this database
+            db = token_info.database
+            if db not in self.knowledge_bases:
+                db_url = self._get_db_url(db)
+                self.knowledge_bases[db] = KnowledgeBase(db_url)
+            if db not in self.kb_locks:
+                self.kb_locks[db] = asyncio.Lock()
 
-            kb = self.knowledge_bases[token_info.database]
+            kb = self.knowledge_bases[db]
+            kb_lock = self.kb_locks[db]
 
             # Execute the tool
-            token_info_db = token_info.database if token_info else None
-            db_cfg = config.get_database(token_info_db)
+            db_cfg = config.get_database(db)
             return await execute_tool(
-                kb, name, arguments, db_name=token_info_db, db_config=db_cfg
+                kb, name, arguments, db_name=db, db_config=db_cfg, kb_lock=kb_lock
             )
 
     def create_app(self):
@@ -200,9 +213,6 @@ class HTTPMCPServer:
                             )
                             await response(scope, receive, send)
                             return
-
-                # Set current token info for tool calls
-                self.server._current_token_info = token_info
 
                 # Wrap send to capture the session ID from response headers
                 captured_session_id = None

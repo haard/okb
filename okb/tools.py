@@ -124,6 +124,21 @@ def format_actionable_items(items: list[dict]) -> str:
     return "\n\n".join(output)
 
 
+async def _run_with_lock(fn, *args, lock: asyncio.Lock | None = None, **kwargs):
+    """Run a sync function, optionally under an asyncio lock and in a thread.
+
+    The lock serializes access to the shared KnowledgeBase connection (psycopg
+    connections are not thread-safe).  ``to_thread`` offloads the blocking I/O
+    so the event loop stays responsive.
+
+    When lock is None (stdio transport), the function runs directly with zero overhead.
+    """
+    if lock is not None:
+        async with lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+    return fn(*args, **kwargs)
+
+
 async def execute_tool(
     kb: KnowledgeBase,
     name: str,
@@ -131,6 +146,7 @@ async def execute_tool(
     *,
     db_name: str | None = None,
     db_config: DatabaseConfig | None = None,
+    kb_lock: asyncio.Lock | None = None,
 ) -> CallToolResult:
     """Execute an MCP tool on a knowledge base.
 
@@ -143,26 +159,31 @@ async def execute_tool(
         arguments: Tool arguments dict.
         db_name: Database name (for sync state, snapshots, etc.).
         db_config: Database config (for get_database_info).
+        kb_lock: Per-KB asyncio lock for HTTP transport (None for stdio).
     """
     try:
         if name == "search_knowledge":
-            results = kb.semantic_search(
+            results = await _run_with_lock(
+                kb.semantic_search,
                 query=arguments["query"],
                 limit=arguments.get("limit", 5),
                 source_type=arguments.get("source_type"),
                 project=arguments.get("project"),
                 since=arguments.get("since"),
+                lock=kb_lock,
             )
             return CallToolResult(
                 content=[TextContent(type="text", text=format_search_results(results))]
             )
 
         elif name == "keyword_search":
-            results = kb.keyword_search(
+            results = await _run_with_lock(
+                kb.keyword_search,
                 query=arguments["query"],
                 limit=arguments.get("limit", 5),
                 source_type=arguments.get("source_type"),
                 since=arguments.get("since"),
+                lock=kb_lock,
             )
             return CallToolResult(
                 content=[
@@ -173,11 +194,13 @@ async def execute_tool(
             )
 
         elif name == "hybrid_search":
-            results = kb.hybrid_search(
+            results = await _run_with_lock(
+                kb.hybrid_search,
                 query=arguments["query"],
                 limit=arguments.get("limit", 5),
                 source_type=arguments.get("source_type"),
                 since=arguments.get("since"),
+                lock=kb_lock,
             )
             return CallToolResult(
                 content=[
@@ -188,7 +211,7 @@ async def execute_tool(
             )
 
         elif name == "get_document":
-            doc = kb.get_document(arguments["source_path"])
+            doc = await _run_with_lock(kb.get_document, arguments["source_path"], lock=kb_lock)
             if not doc:
                 return CallToolResult(
                     content=[TextContent(type="text", text="Document not found.")]
@@ -198,7 +221,7 @@ async def execute_tool(
             )
 
         elif name == "list_sources":
-            sources = kb.list_sources()
+            sources = await _run_with_lock(kb.list_sources, lock=kb_lock)
             if not sources:
                 return CallToolResult(
                     content=[TextContent(type="text", text="No documents indexed yet.")]
@@ -213,7 +236,7 @@ async def execute_tool(
             return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
 
         elif name == "list_projects":
-            projects = kb.list_projects()
+            projects = await _run_with_lock(kb.list_projects, lock=kb_lock)
             if not projects:
                 return CallToolResult(content=[TextContent(type="text", text="No projects found.")])
             return CallToolResult(
@@ -225,7 +248,7 @@ async def execute_tool(
             )
 
         elif name == "get_project_stats":
-            stats = kb.get_project_stats()
+            stats = await _run_with_lock(kb.get_project_stats, lock=kb_lock)
             if not stats:
                 return CallToolResult(content=[TextContent(type="text", text="No projects found.")])
             output = ["## Project Statistics\n"]
@@ -239,7 +262,9 @@ async def execute_tool(
         elif name == "list_documents_by_project":
             project = arguments["project"]
             limit = arguments.get("limit", 100)
-            docs = kb.list_documents_by_project(project, limit)
+            docs = await _run_with_lock(
+                kb.list_documents_by_project, project, limit, lock=kb_lock
+            )
             if not docs:
                 msg = f"No documents found for project '{project}'."
                 return CallToolResult(content=[TextContent(type="text", text=msg)])
@@ -256,7 +281,7 @@ async def execute_tool(
                 return CallToolResult(
                     content=[TextContent(type="text", text="Old and new names are the same.")]
                 )
-            count = kb.rename_project(old_name, new_name)
+            count = await _run_with_lock(kb.rename_project, old_name, new_name, lock=kb_lock)
             if count == 0:
                 return CallToolResult(
                     content=[
@@ -279,7 +304,9 @@ async def execute_tool(
         elif name == "set_document_project":
             source_path = arguments["source_path"]
             project = arguments.get("project")
-            success = kb.set_document_project(source_path, project)
+            success = await _run_with_lock(
+                kb.set_document_project, source_path, project, lock=kb_lock
+            )
             if not success:
                 return CallToolResult(
                     content=[TextContent(type="text", text=f"Document not found: {source_path}")]
@@ -298,7 +325,9 @@ async def execute_tool(
             )
 
         elif name == "recent_documents":
-            docs = kb.get_recent_documents(arguments.get("limit", 10))
+            docs = await _run_with_lock(
+                kb.get_recent_documents, arguments.get("limit", 10), lock=kb_lock
+            )
             if not docs:
                 return CallToolResult(
                     content=[TextContent(type="text", text="No documents indexed yet.")]
@@ -315,12 +344,14 @@ async def execute_tool(
             return CallToolResult(content=[TextContent(type="text", text="\n".join(output))])
 
         elif name == "save_knowledge":
-            result = kb.save_knowledge(
+            result = await _run_with_lock(
+                kb.save_knowledge,
                 title=arguments["title"],
                 content=arguments["content"],
                 tags=arguments.get("tags"),
                 project=arguments.get("project"),
                 source_type=arguments.get("source_type", "claude-note"),
+                lock=kb_lock,
             )
             if result["status"] == "duplicate":
                 return CallToolResult(
@@ -350,7 +381,9 @@ async def execute_tool(
             )
 
         elif name == "delete_knowledge":
-            deleted = kb.delete_knowledge(arguments["source_path"])
+            deleted = await _run_with_lock(
+                kb.delete_knowledge, arguments["source_path"], lock=kb_lock
+            )
             if deleted:
                 return CallToolResult(
                     content=[TextContent(type="text", text="Document deleted.")]
@@ -365,12 +398,14 @@ async def execute_tool(
             )
 
         elif name == "update_knowledge":
-            result = kb.update_knowledge(
+            result = await _run_with_lock(
+                kb.update_knowledge,
                 source_path=arguments["source_path"],
                 title=arguments.get("title"),
                 content=arguments.get("content"),
                 tags=arguments.get("tags"),
                 project=arguments.get("project"),
+                lock=kb_lock,
             )
             if result["status"] == "not_found":
                 return CallToolResult(
@@ -409,13 +444,15 @@ async def execute_tool(
             )
 
         elif name == "get_actionable_items":
-            items = kb.get_actionable_items(
+            items = await _run_with_lock(
+                kb.get_actionable_items,
                 item_type=arguments.get("item_type"),
                 status=arguments.get("status"),
                 due_date=arguments.get("due_date"),
                 event_date=arguments.get("event_date"),
                 min_priority=arguments.get("min_priority"),
                 limit=arguments.get("limit", 20),
+                lock=kb_lock,
             )
             return CallToolResult(
                 content=[TextContent(type="text", text=format_actionable_items(items))]
@@ -434,7 +471,7 @@ async def execute_tool(
             llm_desc = None
             llm_topics = None
             try:
-                metadata = kb.get_database_metadata()
+                metadata = await _run_with_lock(kb.get_database_metadata, lock=kb_lock)
                 llm_desc = metadata.get("llm_description", {}).get("value")
                 llm_topics = metadata.get("llm_topics", {}).get("value")
                 if llm_desc:
@@ -445,7 +482,7 @@ async def execute_tool(
                 pass  # Table may not exist yet
 
             # Content stats
-            sources = kb.list_sources()
+            sources = await _run_with_lock(kb.list_sources, lock=kb_lock)
             if sources:
                 info_parts.append("\n### Content Statistics")
                 for s in sources:
@@ -456,7 +493,7 @@ async def execute_tool(
                     )
 
             # Projects
-            projects = kb.list_projects()
+            projects = await _run_with_lock(kb.list_projects, lock=kb_lock)
             if projects:
                 info_parts.append(f"\n### Projects\n{', '.join(projects)}")
 
@@ -474,10 +511,16 @@ async def execute_tool(
         elif name == "set_database_description":
             updated = []
             if "description" in arguments:
-                kb.set_database_metadata("llm_description", arguments["description"])
+                await _run_with_lock(
+                    kb.set_database_metadata, "llm_description", arguments["description"],
+                    lock=kb_lock,
+                )
                 updated.append("description")
             if "topics" in arguments:
-                kb.set_database_metadata("llm_topics", arguments["topics"])
+                await _run_with_lock(
+                    kb.set_database_metadata, "llm_topics", arguments["topics"],
+                    lock=kb_lock,
+                )
                 updated.append("topics")
             if updated:
                 return CallToolResult(
@@ -493,13 +536,15 @@ async def execute_tool(
             )
 
         elif name == "add_todo":
-            result = kb.save_todo(
+            result = await _run_with_lock(
+                kb.save_todo,
                 title=arguments["title"],
                 content=arguments.get("content"),
                 due_date=arguments.get("due_date"),
                 priority=arguments.get("priority"),
                 project=arguments.get("project"),
                 tags=arguments.get("tags"),
+                lock=kb_lock,
             )
             parts = [
                 "TODO created:",
@@ -564,19 +609,24 @@ async def execute_tool(
         elif name == "list_sync_sources":
             from .mcp_server import _list_sync_sources
 
-            result = _list_sync_sources(kb.db_url, db_name or "default")
+            # These helpers create their own DB connections, so the KB lock
+            # isn't needed — to_thread is purely for event loop responsiveness.
+            _fn = partial(_list_sync_sources, kb.db_url, db_name or "default")
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "get_synthesis_samples":
             from .mcp_server import _get_synthesis_samples
 
-            result = _get_synthesis_samples(
+            _fn = partial(
+                _get_synthesis_samples,
                 kb.db_url,
                 project=arguments.get("project"),
                 sample_size=arguments.get("sample_size", 20),
                 strategy=arguments.get("strategy", "diverse"),
                 excerpt_length=arguments.get("excerpt_length", 1500),
             )
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "synthesize_knowledge":
@@ -596,39 +646,46 @@ async def execute_tool(
         elif name == "list_pending_synthesis":
             from .mcp_server import _list_pending_synthesis
 
-            result = _list_pending_synthesis(
+            _fn = partial(
+                _list_pending_synthesis,
                 kb.db_url,
                 project=arguments.get("project"),
                 limit=arguments.get("limit", 50),
             )
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "approve_synthesis":
             from .mcp_server import _approve_synthesis
 
-            result = _approve_synthesis(
+            _fn = partial(
+                _approve_synthesis,
                 kb.db_url,
                 arguments["pending_id"],
                 title=arguments.get("title"),
                 content=arguments.get("content"),
             )
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "reject_synthesis":
             from .mcp_server import _reject_synthesis
 
-            result = _reject_synthesis(kb.db_url, arguments["pending_id"])
+            _fn = partial(_reject_synthesis, kb.db_url, arguments["pending_id"])
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "edit_pending_synthesis":
             from .mcp_server import _edit_pending_synthesis
 
-            result = _edit_pending_synthesis(
+            _fn = partial(
+                _edit_pending_synthesis,
                 kb.db_url,
                 arguments["pending_id"],
                 title=arguments.get("title"),
                 content=arguments.get("content"),
             )
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "analyze_knowledge_base":
@@ -648,23 +705,27 @@ async def execute_tool(
         elif name == "save_snapshot":
             from .mcp_server import _save_snapshot
 
-            result = _save_snapshot(arguments.get("name"), db_name=db_name)
+            _fn = partial(_save_snapshot, arguments.get("name"), db_name=db_name)
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "list_snapshots":
             from .mcp_server import _list_snapshots
 
-            result = _list_snapshots(db_name=db_name)
+            _fn = partial(_list_snapshots, db_name=db_name)
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "restore_snapshot":
             from .mcp_server import _restore_snapshot
 
-            result = _restore_snapshot(
+            _fn = partial(
+                _restore_snapshot,
                 arguments["name"],
                 arguments.get("confirm", False),
                 db_name=db_name,
             )
+            result = await asyncio.to_thread(_fn) if kb_lock is not None else _fn()
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         else:

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix race condition in HTTP transport auth lookup — use per-request `request_context` instead of
+  shared `_current_token_info` attribute
+- Add per-KB asyncio locks for connection safety (psycopg connections are not thread-safe)
+- Serialize all KB method calls under the lock in HTTP transport via `_run_with_lock`
+
 ## [2.3.0a3] - 2026-03-03
 
 ### Changed
