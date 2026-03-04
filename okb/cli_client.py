@@ -331,6 +331,7 @@ def sync_run(ctx, sync_all: bool, full: bool):
       okb sync run github [OPTS]   GitHub with --repo, --issues, etc.
       okb sync run todoist         Todoist tasks
       okb sync run dropbox-paper   Dropbox Paper docs
+      okb sync run slack           Slack messages
     """
     ctx.ensure_object(dict)
     ctx.obj["full"] = full
@@ -396,6 +397,19 @@ def sync_run_dropbox_paper(ctx, folder: tuple[str, ...], doc_ids: tuple[str, ...
         args["folders"] = list(folder)
     if doc_ids:
         args["doc_ids"] = list(doc_ids)
+    _call("trigger_sync", args)
+
+
+@sync_run.command("slack")
+@click.option("--channel", multiple=True, help="Channel ID to sync (repeatable)")
+@click.pass_context
+def sync_run_slack(ctx, channel: tuple[str, ...]):
+    """Sync Slack messages."""
+    args: dict = {"sources": ["slack"]}
+    if ctx.obj.get("full"):
+        args["full"] = True
+    if channel:
+        args["channels"] = list(channel)
     _call("trigger_sync", args)
 
 

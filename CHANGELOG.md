@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add per-KB asyncio locks for connection safety (psycopg connections are not thread-safe)
 - Serialize all KB method calls under the lock in HTTP transport via `_run_with_lock`
 
+## [2.3.0a4] - 2026-03-04
+
+### Added
+- `okb sync run slack` client CLI subcommand with `--channel` option for filtering by channel ID
+
 ## [2.3.0a3] - 2026-03-03
 
 ### Changed
