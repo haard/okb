@@ -27,6 +27,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import dateparser
 import psycopg
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -46,50 +47,96 @@ from .tools import format_search_results as format_search_results  # noqa: F401 
 from .tools import get_document_date as get_document_date  # noqa: F401 re-export
 
 
+def _dateparser_parse(text: str) -> datetime | None:
+    """Parse a natural-language date string via dateparser (returns UTC-aware datetime or None)."""
+    return dateparser.parse(
+        text,
+        settings={
+            "PREFER_DATES_FROM": "past",
+            "TIMEZONE": "UTC",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+        },
+    )
+
+
 def parse_since_filter(since: str) -> datetime | None:
-    """Parse since filter like '7d', '30d', '6mo' or ISO date."""
+    """Parse since filter: compact ('7d','6mo','1y'), ISO date, or natural language."""
     from datetime import timedelta
 
     now = datetime.now(UTC)
+    # Fast-path: compact relative format
     match = re.match(r"^(\d+)(d|mo|y)$", since.lower())
     if match:
         value, unit = int(match.group(1)), match.group(2)
         days = value * {"d": 1, "mo": 30, "y": 365}[unit]
         return now - timedelta(days=days)
+    # Fast-path: ISO date
     try:
         return datetime.fromisoformat(since.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        pass
+    # Fallback: dateparser for natural language
+    return _dateparser_parse(since)
 
 
 def parse_date_range(date_str: str) -> tuple[datetime, datetime] | None:
-    """Parse date range like 'today', 'tomorrow', 'this_week', '2024-01-15', or ISO date."""
+    """Parse date range: keywords, YYYY-MM-DD, or natural language (single-day range)."""
     from datetime import timedelta
 
     now = datetime.now(UTC)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
-    if date_str.lower() == "today":
+    keyword = date_str.lower().replace(" ", "_")
+    if keyword == "today":
         return (today_start, today_end)
-    elif date_str.lower() == "tomorrow":
+    elif keyword == "tomorrow":
         return (today_end, today_end + timedelta(days=1))
-    elif date_str.lower() == "this_week":
-        # Monday to Sunday
+    elif keyword == "yesterday":
+        return (today_start - timedelta(days=1), today_start)
+    elif keyword == "this_week":
         days_since_monday = now.weekday()
         week_start = today_start - timedelta(days=days_since_monday)
         return (week_start, week_start + timedelta(days=7))
-    elif date_str.lower() == "next_week":
+    elif keyword == "next_week":
         days_since_monday = now.weekday()
         next_week_start = today_start + timedelta(days=7 - days_since_monday)
         return (next_week_start, next_week_start + timedelta(days=7))
-    elif re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
-        # Single date: return that day
+    elif keyword == "last_week":
+        days_since_monday = now.weekday()
+        this_week_start = today_start - timedelta(days=days_since_monday)
+        return (this_week_start - timedelta(days=7), this_week_start)
+    elif keyword == "this_month":
+        month_start = today_start.replace(day=1)
+        if now.month == 12:
+            month_end = month_start.replace(year=now.year + 1, month=1)
+        else:
+            month_end = month_start.replace(month=now.month + 1)
+        return (month_start, month_end)
+    elif keyword == "next_month":
+        if now.month == 12:
+            next_start = today_start.replace(year=now.year + 1, month=1, day=1)
+        else:
+            next_start = today_start.replace(month=now.month + 1, day=1)
+        if next_start.month == 12:
+            next_end = next_start.replace(year=next_start.year + 1, month=1)
+        else:
+            next_end = next_start.replace(month=next_start.month + 1)
+        return (next_start, next_end)
+
+    # YYYY-MM-DD fast-path
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         try:
             dt = datetime.fromisoformat(date_str).replace(tzinfo=UTC)
             return (dt, dt + timedelta(days=1))
         except ValueError:
             return None
+
+    # Fallback: dateparser → single-day range
+    parsed = _dateparser_parse(date_str)
+    if parsed:
+        day_start = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+        return (day_start, day_start + timedelta(days=1))
     return None
 
 
@@ -1501,7 +1548,11 @@ async def list_tools() -> list[Tool]:
                     },
                     "since": {
                         "type": "string",
-                        "description": "Filter to documents modified since (ISO date or relative: '7d', '30d', '6mo')",
+                        "description": (
+                            "Filter to documents modified since. Accepts relative "
+                            "('7d', '30d', '6mo', '1y'), natural language "
+                            "('last week', '3 months ago'), or ISO date."
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -1533,7 +1584,11 @@ async def list_tools() -> list[Tool]:
                     },
                     "since": {
                         "type": "string",
-                        "description": "Filter to documents modified since (ISO date or relative: '7d', '30d', '6mo')",
+                        "description": (
+                            "Filter to documents modified since. Accepts relative "
+                            "('7d', '30d', '6mo', '1y'), natural language "
+                            "('last week', '3 months ago'), or ISO date."
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -1565,7 +1620,11 @@ async def list_tools() -> list[Tool]:
                     },
                     "since": {
                         "type": "string",
-                        "description": "Filter to documents modified since (ISO date or relative: '7d', '30d', '6mo')",
+                        "description": (
+                            "Filter to documents modified since. Accepts relative "
+                            "('7d', '30d', '6mo', '1y'), natural language "
+                            "('last week', '3 months ago'), or ISO date."
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -1806,15 +1865,17 @@ async def list_tools() -> list[Tool]:
                     "due_date": {
                         "type": "string",
                         "description": (
-                            "Filter tasks by due date: 'today', 'tomorrow', 'this_week', "
-                            "'next_week', or 'YYYY-MM-DD'"
+                            "Filter tasks by due date: 'today', 'tomorrow', 'yesterday', "
+                            "'this week', 'next week', 'last week', 'this month', "
+                            "'next month', natural language, or YYYY-MM-DD"
                         ),
                     },
                     "event_date": {
                         "type": "string",
                         "description": (
-                            "Filter events by date: 'today', 'tomorrow', 'this_week', "
-                            "'next_week', or 'YYYY-MM-DD'"
+                            "Filter events by date: 'today', 'tomorrow', 'yesterday', "
+                            "'this week', 'next week', 'last week', 'this month', "
+                            "'next month', natural language, or YYYY-MM-DD"
                         ),
                     },
                     "min_priority": {
@@ -1898,7 +1959,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "due_date": {
                         "type": "string",
-                        "description": ("Due date: ISO date (YYYY-MM-DD), 'today', or 'tomorrow'"),
+                        "description": (
+                            "Due date: 'today', 'tomorrow', natural "
+                            "language, or YYYY-MM-DD"
+                        ),
                     },
                     "priority": {
                         "type": "string",

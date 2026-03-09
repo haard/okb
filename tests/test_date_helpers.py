@@ -128,9 +128,25 @@ class TestParseSinceFilter:
         assert result.hour == 12
 
     def test_invalid_returns_none(self):
-        assert parse_since_filter("invalid") is None
-        assert parse_since_filter("7x") is None
         assert parse_since_filter("") is None
+        assert parse_since_filter("invalid") is None
+
+    def test_dateparser_fallback_last_week(self):
+        """dateparser handles 'last week' — result should be in the past."""
+        result = parse_since_filter("last week")
+        assert result is not None
+        assert result < datetime.now(UTC)
+
+    def test_dateparser_fallback_3_months_ago(self):
+        result = parse_since_filter("3 months ago")
+        assert result is not None
+        assert result < datetime.now(UTC) - timedelta(days=60)
+
+    def test_dateparser_fallback_yesterday(self):
+        result = parse_since_filter("yesterday")
+        assert result is not None
+        now = datetime.now(UTC)
+        assert now - timedelta(days=2) < result < now
 
 
 class TestParseDateRange:
@@ -162,6 +178,15 @@ class TestParseDateRange:
         assert start.day == 18
         assert end.day == 19
 
+    def test_yesterday(self, freeze_time):
+        result = parse_date_range("yesterday")
+        assert result is not None
+        start, end = result
+        assert start.day == 16
+        assert start.hour == 0
+        assert end.day == 17
+        assert end.hour == 0
+
     def test_this_week(self, freeze_time):
         # 2024-01-17 is Wednesday, so week starts Monday 2024-01-15
         result = parse_date_range("this_week")
@@ -170,12 +195,59 @@ class TestParseDateRange:
         assert start.day == 15  # Monday
         assert end.day == 22  # Following Monday
 
+    def test_this_week_with_space(self, freeze_time):
+        result = parse_date_range("this week")
+        assert result is not None
+        start, end = result
+        assert start.day == 15
+        assert end.day == 22
+
     def test_next_week(self, freeze_time):
         result = parse_date_range("next_week")
         assert result is not None
         start, end = result
         assert start.day == 22  # Next Monday
         assert end.day == 29  # Monday after
+
+    def test_last_week(self, freeze_time):
+        # 2024-01-17 is Wednesday, this week starts Mon 15, last week Mon 8-Sun 14
+        result = parse_date_range("last_week")
+        assert result is not None
+        start, end = result
+        assert start.day == 8  # Previous Monday
+        assert end.day == 15  # This Monday
+
+    def test_last_week_with_space(self, freeze_time):
+        result = parse_date_range("last week")
+        assert result is not None
+        start, end = result
+        assert start.day == 8
+        assert end.day == 15
+
+    def test_this_month(self, freeze_time):
+        result = parse_date_range("this_month")
+        assert result is not None
+        start, end = result
+        assert start.day == 1
+        assert start.month == 1
+        assert end.day == 1
+        assert end.month == 2
+
+    def test_this_month_with_space(self, freeze_time):
+        result = parse_date_range("this month")
+        assert result is not None
+        start, end = result
+        assert start.month == 1
+        assert end.month == 2
+
+    def test_next_month(self, freeze_time):
+        result = parse_date_range("next_month")
+        assert result is not None
+        start, end = result
+        assert start.day == 1
+        assert start.month == 2
+        assert end.day == 1
+        assert end.month == 3
 
     def test_specific_date(self):
         result = parse_date_range("2024-02-15")
@@ -193,9 +265,22 @@ class TestParseDateRange:
 
     def test_invalid_date_format(self):
         assert parse_date_range("2024-13-01") is None  # Invalid month
-        assert parse_date_range("not-a-date") is None
         assert parse_date_range("") is None
+        assert parse_date_range("not-a-date") is None
 
-    def test_invalid_keyword(self):
-        assert parse_date_range("yesterday") is None
-        assert parse_date_range("last_week") is None
+    def test_dateparser_fallback_natural_language(self):
+        """dateparser handles 'january 15 2024' → single-day range."""
+        result = parse_date_range("january 15 2024")
+        assert result is not None
+        start, end = result
+        assert start.month == 1
+        assert start.day == 15
+        assert end.day == 16
+
+    def test_dateparser_fallback_relative(self):
+        """dateparser handles '2 days ago' → single-day range."""
+        result = parse_date_range("2 days ago")
+        assert result is not None
+        start, end = result
+        assert end - start == timedelta(days=1)
+        assert start < datetime.now(UTC)
