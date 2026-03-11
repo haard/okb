@@ -7,25 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-03-11
+
+### Added
+- Natural language date parsing via `dateparser` for `since`, `due_date`, and `event_date`
+  parameters (e.g. "last week", "3 months ago", "yesterday")
+- New date range keywords: `yesterday`, `last week`, `this month`, `next month`
+- `okb sync run slack` client CLI subcommand with `--channel` option for filtering by channel ID
+- Client CLI `sync run` restructured as group with per-source subcommands (`github`, `todoist`,
+  `dropbox-paper`, `slack`) — source-specific options grouped under their subcommand
+- GitHub sync options (`--issues`, `--prs`, `--wiki`, `--source`) now available in client CLI
+- MCP `trigger_sync` tool accepts `include_issues`, `include_prs`, `include_wiki`,
+  `include_source`, `folders`, and `channels` parameters
+
+### Changed
+- Clarified `save_knowledge` vs `ingest_documents` tool descriptions to prevent LLM confusion —
+  `save_knowledge` is for LLM-created content, `ingest_documents` is for external sources
+- `ingest_documents` rejects `claude://` and `okb://` source paths with guidance to use
+  `save_knowledge` instead
+
 ### Fixed
 - Fix race condition in HTTP transport auth lookup — use per-request `request_context` instead of
   shared `_current_token_info` attribute
 - Add per-KB asyncio locks for connection safety (psycopg connections are not thread-safe)
 - Serialize all KB method calls under the lock in HTTP transport via `_run_with_lock`
-
-## [2.3.0a4] - 2026-03-04
-
-### Added
-- `okb sync run slack` client CLI subcommand with `--channel` option for filtering by channel ID
-
-## [2.3.0a3] - 2026-03-03
-
-### Changed
-- Client CLI `sync run` restructured as group with per-source subcommands (`github`,
-  `todoist`, `dropbox-paper`) — source-specific options now grouped under their subcommand
-- GitHub sync options (`--issues`, `--prs`, `--wiki`, `--source`) now available in client CLI
-- MCP `trigger_sync` tool accepts `include_issues`, `include_prs`, `include_wiki`,
-  `include_source`, `folders`, and `channels` parameters
 
 ## [2.3.0a2] - 2026-03-01
 

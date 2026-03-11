@@ -1752,10 +1752,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="save_knowledge",
             description=(
-                "Save a piece of knowledge to the knowledge base for future reference. "
-                "Use this to remember solutions, patterns, debugging tips, architectural decisions, "
-                "or any useful information discovered during this conversation. "
-                "The knowledge will be searchable in future sessions."
+                "Save knowledge you have created or synthesized to the knowledge base. "
+                "Use this for insights, summaries, solutions, patterns, or decisions "
+                "produced during this conversation. NOT for ingesting external content — "
+                "use ingest_documents for that. Searchable in future sessions."
             ),
             inputSchema={
                 "type": "object",
@@ -2091,10 +2091,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="ingest_documents",
             description=(
-                "Ingest pre-parsed documents into the knowledge base. "
-                "Documents should be serialized with source_path, source_type, "
-                "title, content, and optional metadata/sections. The server handles "
-                "chunking, embedding, and storage. Requires write permission."
+                "Ingest external content (web pages, files, API data) into the knowledge base. "
+                "Each document must have a real external source_path (URL, file path, or URI) — "
+                "do NOT use this to save LLM-generated notes (use save_knowledge instead). "
+                "The server handles chunking, embedding, and storage. Requires write permission."
             ),
             inputSchema={
                 "type": "object",
@@ -2104,7 +2104,14 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "source_path": {"type": "string"},
+                                "source_path": {
+                                    "type": "string",
+                                    "description": (
+                                        "External source URI: a URL (https://...), file path, "
+                                        "or service URI (github://..., todoist://...). "
+                                        "Must identify the original external source."
+                                    ),
+                                },
                                 "source_type": {"type": "string"},
                                 "title": {"type": "string"},
                                 "content": {"type": "string"},

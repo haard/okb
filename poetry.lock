@@ -849,10 +849,9 @@ yaml = ["PyYAML (>=6,<7)"]
 name = "dateparser"
 version = "1.2.2"
 description = "Date parsing library designed to parse dates from HTML pages"
-optional = true
+optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "extra == \"web\" or extra == \"all\""
 files = [
     {file = "dateparser-1.2.2-py3-none-any.whl", hash = "sha256:5a5d7211a09013499867547023a2a0c91d5a27d15dd4dbcea676ea9fe66f2482"},
     {file = "dateparser-1.2.2.tar.gz", hash = "sha256:986316f17cb8cdc23ea8ce563027c5ef12fc725b6fb1d137c14ca08777c5ecf7"},
@@ -3204,10 +3203,9 @@ dev = ["pre-commit", "pytest-asyncio", "tox"]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
-optional = true
+optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
 groups = ["main"]
-markers = "extra == \"web\" or extra == \"all\" or extra == \"llm-bedrock\""
 files = [
     {file = "python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3"},
     {file = "python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"},
@@ -3264,10 +3262,9 @@ files = [
 name = "pytz"
 version = "2025.2"
 description = "World timezone definitions, modern and historical"
-optional = true
+optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "extra == \"web\" or extra == \"all\""
 files = [
     {file = "pytz-2025.2-py2.py3-none-any.whl", hash = "sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00"},
     {file = "pytz-2025.2.tar.gz", hash = "sha256:360b9e3dbb49a209c21ad61809c7fb453643e048b38924c765813546746e81c3"},
@@ -4574,7 +4571,7 @@ description = "Provider of IANA time zone data"
 optional = false
 python-versions = ">=2"
 groups = ["main"]
-markers = "(extra == \"web\" or extra == \"all\") and platform_system == \"Windows\" or sys_platform == \"win32\""
+markers = "sys_platform == \"win32\" or platform_system == \"Windows\""
 files = [
     {file = "tzdata-2025.3-py2.py3-none-any.whl", hash = "sha256:06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1"},
     {file = "tzdata-2025.3.tar.gz", hash = "sha256:de39c2ca5dc7b0344f2eba86f49d614019d29f060fc4ebc8a417896a620b56a7"},
@@ -4584,10 +4581,9 @@ files = [
 name = "tzlocal"
 version = "5.3.1"
 description = "tzinfo object for the local timezone"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "extra == \"web\" or extra == \"all\""
 files = [
     {file = "tzlocal-5.3.1-py3-none-any.whl", hash = "sha256:eb1a66c3ef5847adf7a834f1be0800581b683b5608e74f86ecbcef8ab91bb85d"},
     {file = "tzlocal-5.3.1.tar.gz", hash = "sha256:cceffc7edecefea1f595541dbd6e990cb1ea3d19bf01b2809f362a03dd7921fd"},
@@ -5001,4 +4997,4 @@ web = ["trafilatura"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "75722bb336cababe35aff419d9bf74848abed3f99730b83790622a4398930308"
+content-hash = "f421bc4517288189d845a9ebe3269df37d2978d331f8f924b3332f333f9b8c43"

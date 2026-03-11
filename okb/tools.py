@@ -582,6 +582,20 @@ async def execute_tool(
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "ingest_documents":
+            for doc in arguments.get("documents", []):
+                sp = doc.get("source_path", "")
+                if sp.startswith("claude://") or sp.startswith("okb://"):
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text",
+                                text=f"Error: source_path '{sp}' is an internal path. "
+                                "Use save_knowledge for LLM-generated content; "
+                                "ingest_documents is for external sources (URLs, file paths).",
+                            )
+                        ]
+                    )
+
             from .mcp_server import _run_ingest
 
             result = await asyncio.to_thread(
