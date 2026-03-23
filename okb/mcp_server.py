@@ -1100,15 +1100,16 @@ def _list_sync_sources(db_url: str, db_name: str) -> str:
     if not installed:
         return "No API sync sources installed."
 
-    # Get last sync times from database
-    last_syncs = {}
+    # Get sync state from database
+    sync_states: dict[str, dict] = {}
     try:
         with psycopg.connect(db_url, row_factory=dict_row) as conn:
             results = conn.execute(
-                """SELECT source_name, last_sync FROM sync_state WHERE database_name = %s""",
+                """SELECT source_name, last_sync, status, started_at, error
+                   FROM sync_state WHERE database_name = %s""",
                 (db_name,),
             ).fetchall()
-            last_syncs = {r["source_name"]: r["last_sync"] for r in results}
+            sync_states = {r["source_name"]: r for r in results}
     except Exception:
         pass  # Database may not be accessible
 
@@ -1116,17 +1117,53 @@ def _list_sync_sources(db_url: str, db_name: str) -> str:
 
     for name in sorted(installed):
         source = PluginRegistry.get_source(name)
-        status = "enabled" if name in enabled else "disabled"
+        cfg_status = "enabled" if name in enabled else "disabled"
         source_type = source.source_type if source else "unknown"
 
-        last_sync = last_syncs.get(name)
-        if last_sync:
-            last_sync_str = format_relative_time(last_sync.isoformat())
-        else:
-            last_sync_str = "never"
+        lines.append(f"- **{name}** ({cfg_status}) - {source_type}")
 
-        lines.append(f"- **{name}** ({status}) - {source_type}")
-        lines.append(f"  Last sync: {last_sync_str}")
+        st = sync_states.get(name, {})
+        sync_status = st.get("status", "idle")
+        if sync_status == "running":
+            started = st.get("started_at")
+            if started:
+                ago = format_relative_time(started.isoformat())
+                lines.append(f"  Status: running (started {ago})")
+            else:
+                lines.append("  Status: running")
+        elif sync_status == "error":
+            lines.append("  Status: error")
+            if st.get("error"):
+                lines.append(f"  Last error: {st['error']}")
+        else:
+            lines.append("  Status: idle")
+
+        last_sync = st.get("last_sync")
+        if last_sync:
+            sync_ago = format_relative_time(last_sync.isoformat())
+            lines.append(f"  Last sync: {sync_ago}")
+        else:
+            lines.append("  Last sync: never")
+
+    # Show rescan status if present
+    rescan = sync_states.get("_rescan")
+    if rescan:
+        lines.append("")
+        lines.append("**Rescan**")
+        rs = rescan.get("status", "idle")
+        if rs == "running":
+            started = rescan.get("started_at")
+            if started:
+                ago = format_relative_time(started.isoformat())
+                lines.append(f"  Status: running (started {ago})")
+            else:
+                lines.append("  Status: running")
+        elif rs == "error":
+            lines.append("  Status: error")
+            if rescan.get("error"):
+                lines.append(f"  Last error: {rescan['error']}")
+        else:
+            lines.append("  Status: idle")
 
     return "\n".join(lines)
 
@@ -1985,7 +2022,8 @@ async def list_tools() -> list[Tool]:
             name="trigger_sync",
             description=(
                 "Trigger sync of API sources (Todoist, GitHub, Dropbox Paper, etc.). "
-                "Fetches new/updated content from external services. Requires write permission."
+                "Runs in the background and returns immediately. "
+                "Use list_sync_sources to check progress. Requires write permission."
             ),
             inputSchema={
                 "type": "object",
@@ -2069,8 +2107,8 @@ async def list_tools() -> list[Tool]:
             name="trigger_rescan",
             description=(
                 "Check indexed files for changes and re-ingest stale ones. "
-                "Compares stored modification times with current filesystem. "
-                "Requires write permission."
+                "Runs in the background and returns immediately (except dry_run). "
+                "Use list_sync_sources to check progress. Requires write permission."
             ),
             inputSchema={
                 "type": "object",
@@ -2141,8 +2179,8 @@ async def list_tools() -> list[Tool]:
             name="list_sync_sources",
             description=(
                 "List available API sync sources (Todoist, GitHub, Dropbox Paper, etc.) "
-                "with their enabled/disabled status and last sync time. "
-                "Use this to see what external data sources can be synced."
+                "with their enabled/disabled status, sync status (idle/running/error), "
+                "and last sync time. Use to check sync progress after trigger_sync."
             ),
             inputSchema={
                 "type": "object",

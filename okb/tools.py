@@ -558,26 +558,23 @@ async def execute_tool(
             return CallToolResult(content=[TextContent(type="text", text="\n".join(parts))])
 
         elif name == "trigger_sync":
-            from .mcp_server import _run_sync
+            from .sync_runner import start_sync
 
-            result = await asyncio.to_thread(
-                partial(
-                    _run_sync,
-                    kb.db_url,
-                    sources=arguments.get("sources", []),
-                    sync_all=arguments.get("all", False),
-                    full=arguments.get("full", False),
-                    doc_ids=arguments.get("doc_ids"),
-                    repos=arguments.get("repos"),
-                    branch=arguments.get("branch"),
-                    db_name=db_name,
-                    include_issues=arguments.get("include_issues", False),
-                    include_prs=arguments.get("include_prs", False),
-                    include_wiki=arguments.get("include_wiki", False),
-                    include_source=arguments.get("include_source", False),
-                    folders=arguments.get("folders"),
-                    channels=arguments.get("channels"),
-                )
+            result = await start_sync(
+                kb.db_url,
+                db_name or "default",
+                sources=arguments.get("sources", []),
+                sync_all=arguments.get("all", False),
+                full=arguments.get("full", False),
+                doc_ids=arguments.get("doc_ids"),
+                repos=arguments.get("repos"),
+                branch=arguments.get("branch"),
+                include_issues=arguments.get("include_issues", False),
+                include_prs=arguments.get("include_prs", False),
+                include_wiki=arguments.get("include_wiki", False),
+                include_source=arguments.get("include_source", False),
+                folders=arguments.get("folders"),
+                channels=arguments.get("channels"),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
@@ -608,15 +605,13 @@ async def execute_tool(
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
         elif name == "trigger_rescan":
-            from .mcp_server import _run_rescan
+            from .sync_runner import start_rescan
 
-            result = await asyncio.to_thread(
-                partial(
-                    _run_rescan,
-                    kb.db_url,
-                    dry_run=arguments.get("dry_run", False),
-                    delete_missing=arguments.get("delete_missing", False),
-                )
+            result = await start_rescan(
+                kb.db_url,
+                db_name or "default",
+                dry_run=arguments.get("dry_run", False),
+                delete_missing=arguments.get("delete_missing", False),
             )
             return CallToolResult(content=[TextContent(type="text", text=result)])
 
