@@ -358,6 +358,19 @@ Configure your MCP client to connect:
 | `get_entity_relationships` | Get relationships between entities |
 | `run_consolidation` | Run full entity consolidation pipeline |
 
+## Claude.ai Integration (OAuth Shim)
+
+Claude.ai requires OAuth 2.1 for MCP server connections. The `oauth/` directory contains a
+Cloudflare Worker that bridges OAuth 2.1 to OKB's bearer token auth:
+
+```
+Claude.ai ──OAuth 2.1──▶ Cloudflare Worker ──Bearer token──▶ OKB HTTP server
+                              │
+                         GitHub login → maps to pre-existing OKB token
+```
+
+See [`oauth/README.md`](oauth/README.md) for setup instructions.
+
 ## Contextual Chunking
 
 Documents are chunked with context for better retrieval:

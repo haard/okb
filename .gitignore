@@ -40,6 +40,9 @@ CLAUDE.md
 .claude/
 .mcp.json
 
+# Build artifacts
+dist/
+
 # Docker
 pgvector_data/
 
@@ -47,3 +50,11 @@ pgvector_data/
 .cache/
 sentence-transformers/
 plan.org
+
+# Cloudflare Workers
+.wrangler/
+oauth/node_modules/
+oauth/.wrangler/
+
+# WSL metadata
+*:Zone.Identifier
