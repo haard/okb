@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from typing import Any
 
 from mcp.server import Server
@@ -97,8 +98,10 @@ class HTTPMCPServer:
         )
         # Session manager handles all transport complexity
         self.session_manager = StreamableHTTPSessionManager(app=self.server)
-        # Map mcp-session-id -> token_info
-        self.session_tokens: dict[str, TokenInfo] = {}
+        # Map mcp-session-id -> (token_info, created_monotonic)
+        self.session_tokens: dict[str, tuple[TokenInfo, float]] = {}
+        self._max_sessions = 1000
+        self._session_ttl = 86400  # 24 hours
         # Per-KB asyncio locks for connection safety
         self.kb_locks: dict[str, asyncio.Lock] = {}
         self._setup_handlers()
@@ -128,7 +131,9 @@ class HTTPMCPServer:
                 if req is not None:
                     session_id = req.headers.get("mcp-session-id")
                     if session_id:
-                        token_info = self.session_tokens.get(session_id)
+                        entry = self.session_tokens.get(session_id)
+                        if entry is not None:
+                            token_info = entry[0]
             except LookupError:
                 pass
 
@@ -199,8 +204,15 @@ class HTTPMCPServer:
                 # Check if this is an existing session
                 session_id = request.headers.get(session_header_name)
                 if session_id:
-                    # Verify token matches existing session (compare by hash and db, not object)
-                    existing_token = self.session_tokens.get(session_id)
+                    existing_entry = self.session_tokens.get(session_id)
+                    if existing_entry:
+                        existing_token, created_at = existing_entry
+                        # Evict expired sessions on access
+                        if time.monotonic() - created_at > self._session_ttl:
+                            self.session_tokens.pop(session_id, None)
+                            existing_token = None
+                    else:
+                        existing_token = None
                     if existing_token:
                         # Token must match the one used to create the session
                         if (
@@ -231,7 +243,28 @@ class HTTPMCPServer:
                                 )
                                 # Store immediately since SSE keeps connection open
                                 if captured_session_id not in self.session_tokens:
-                                    self.session_tokens[captured_session_id] = token_info
+                                    # Evict oldest sessions if at capacity
+                                    if len(self.session_tokens) >= self._max_sessions:
+                                        now = time.monotonic()
+                                        # Remove expired first
+                                        expired = [
+                                            k
+                                            for k, (_, t) in self.session_tokens.items()
+                                            if now - t > self._session_ttl
+                                        ]
+                                        for k in expired:
+                                            del self.session_tokens[k]
+                                        # If still full, remove oldest
+                                        if len(self.session_tokens) >= self._max_sessions:
+                                            oldest = min(
+                                                self.session_tokens,
+                                                key=lambda k: self.session_tokens[k][1],
+                                            )
+                                            del self.session_tokens[oldest]
+                                    self.session_tokens[captured_session_id] = (
+                                        token_info,
+                                        time.monotonic(),
+                                    )
                                 break
                     await send(message)
 

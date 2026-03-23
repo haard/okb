@@ -107,7 +107,11 @@ def synthesize(
     sample_text = []
     for s in samples:
         excerpt = s["excerpt"].replace("\n", " ")[:200] if s["excerpt"] else ""
-        sample_text.append(f"### {s['title']} ({s['source_type']})\n{excerpt}...")
+        title = s["title"].replace('"', "&quot;") if s["title"] else "untitled"
+        sample_text.append(
+            f'<document title="{title}" source_type="{s["source_type"]}">'
+            f"\n{excerpt}\n</document>"
+        )
 
     min_proposals = max(3, max_proposals // 2)
     prompt = SYNTHESIS_USER.format(

@@ -1,7 +1,7 @@
 """Token management for HTTP authentication.
 
-Token format: okb_<database>_<ro|rw>_<random16hex>
-Example: okb_personal_ro_a1b2c3d4e5f6g7h8
+Token format: okb_<database>_<ro|rw>_<random32hex>
+Example: okb_personal_ro_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
 Tokens are stored hashed (SHA256) in the database for security.
 """
@@ -31,8 +31,9 @@ class TokenInfo:
     last_used_at: datetime | None
 
 
-# Token format regex: okb_<database>_<ro|rw>_<hex16>
-TOKEN_PATTERN = re.compile(r"^okb_([a-z0-9_-]+)_(ro|rw)_([a-f0-9]{16})$")
+# Token format regex: okb_<database>_<ro|rw>_<hex16or32>
+# Accepts both old 16-char (64-bit) and new 32-char (128-bit) tokens for backward compat
+TOKEN_PATTERN = re.compile(r"^okb_([a-z0-9_-]+)_(ro|rw)_([a-f0-9]{16,32})$")
 
 
 def generate_token(database: str, permissions: str = "rw") -> str:
@@ -50,7 +51,7 @@ def generate_token(database: str, permissions: str = "rw") -> str:
     if not re.match(r"^[a-z0-9_-]+$", database):
         raise ValueError("database name must be lowercase alphanumeric with _ or -")
 
-    random_part = secrets.token_hex(8)  # 16 hex chars
+    random_part = secrets.token_hex(16)  # 32 hex chars = 128 bits
     return f"okb_{database}_{permissions}_{random_part}"
 
 

@@ -428,21 +428,35 @@ class GitHubSource:
 
         # Wiki is a separate git repo at {repo}.wiki.git
         # We need to use git to clone it
+        import os
+        import stat
         import tempfile
         from pathlib import Path
         from subprocess import CalledProcessError, run
 
-        # Use token in URL for authentication
-        wiki_url = f"https://{self._token}@github.com/{repo.full_name}.wiki.git"
+        wiki_url = f"https://github.com/{repo.full_name}.wiki.git"
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a GIT_ASKPASS script to avoid embedding token in URL/process args
+            askpass_fd, askpass_path = tempfile.mkstemp(suffix=".sh", prefix="okb_askpass_")
             try:
+                with os.fdopen(askpass_fd, "w") as f:
+                    f.write(f"#!/bin/sh\necho {self._token}\n")
+                os.chmod(askpass_path, stat.S_IRUSR | stat.S_IXUSR)
+
+                clone_env = {
+                    **os.environ,
+                    "GIT_ASKPASS": askpass_path,
+                    "GIT_TERMINAL_PROMPT": "0",
+                }
+
                 # Clone wiki repo (shallow)
                 result = run(
                     ["git", "clone", "--depth", "1", wiki_url, tmpdir],
                     capture_output=True,
                     text=True,
                     timeout=60,
+                    env=clone_env,
                 )
                 if result.returncode != 0:
                     # Wiki might not exist even if has_wiki is True
@@ -482,5 +496,11 @@ class GitHubSource:
                 print(f"    Error cloning wiki: {e}", file=sys.stderr)
             except Exception as e:
                 print(f"    Error syncing wiki: {e}", file=sys.stderr)
+            finally:
+                # Clean up askpass script
+                try:
+                    os.unlink(askpass_path)
+                except OSError:
+                    pass
 
         return documents
