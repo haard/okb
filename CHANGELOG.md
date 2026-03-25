@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1a1] - 2025-03-25
+
+### Added
+- `okb schedule add <source> <interval>` — schedule periodic sync via systemd user timers
+- `okb schedule remove <source>` — remove a scheduled sync timer
+- `okb schedule list` — list all active sync timers
+
 ## [2.3.0] - 2026-03-11
 
 ### Added

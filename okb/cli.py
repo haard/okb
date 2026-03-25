@@ -2163,29 +2163,31 @@ def _get_env_file_path() -> Path:
     return config_dir / "env"
 
 
-def _generate_http_service(okb_path: str) -> str:
-    """Generate okb.service content."""
-    # Build a minimal PATH with essential directories
-    # Filter out problematic paths (WSL Windows paths with spaces, etc.)
+def _build_service_path() -> str:
+    """Build a sanitized PATH string for systemd service units.
+
+    Filters out WSL Windows paths and paths with spaces that break systemd.
+    """
     current_path = os.environ.get("PATH", "")
     essential_paths = []
     for p in current_path.split(":"):
-        # Skip Windows paths in WSL (contain spaces, not needed)
         if p.startswith("/mnt/"):
             continue
-        # Skip paths with spaces (would break systemd Environment line)
         if " " in p:
             continue
-        # Keep paths that exist
         if Path(p).is_dir():
             essential_paths.append(p)
 
-    # Ensure we have basic system paths
     for fallback in ["/usr/local/bin", "/usr/bin", "/bin"]:
         if fallback not in essential_paths and Path(fallback).is_dir():
             essential_paths.append(fallback)
 
-    path_dirs = ":".join(essential_paths)
+    return ":".join(essential_paths)
+
+
+def _generate_http_service(okb_path: str) -> str:
+    """Generate okb.service content."""
+    path_dirs = _build_service_path()
     env_file = _get_env_file_path()
 
     return f"""[Unit]
@@ -2204,6 +2206,142 @@ EnvironmentFile=-{env_file}
 [Install]
 WantedBy=default.target
 """
+
+
+def _sync_unit_name(db_name: str, source: str) -> str:
+    """Return the base name for sync systemd units (without extension)."""
+    return f"okb-sync-{db_name}-{source}"
+
+
+def _generate_sync_service(okb_path: str, db_name: str, source: str) -> str:
+    """Generate a oneshot service unit for syncing a source."""
+    path_dirs = _build_service_path()
+    env_file = _get_env_file_path()
+
+    return f"""[Unit]
+Description=OKB Sync {source} ({db_name})
+After=okb-db.service
+Requires=okb-db.service
+
+[Service]
+Type=oneshot
+ExecStart={okb_path} --db {db_name} sync run {source}
+Environment=PATH={path_dirs}
+EnvironmentFile=-{env_file}
+"""
+
+
+def _generate_sync_timer(db_name: str, source: str, interval: str) -> str:
+    """Generate a timer unit for periodic sync."""
+    return f"""[Unit]
+Description=OKB Sync Timer: {source} ({db_name})
+
+[Timer]
+OnBootSec={interval}
+OnUnitActiveSec={interval}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+@main.group()
+def schedule():
+    """Manage scheduled sync timers (systemd user timers)."""
+    pass
+
+
+@schedule.command("add")
+@click.argument("source")
+@click.argument("interval")
+@click.option("--db", "database", default=None, help="Database to schedule sync for")
+@click.pass_context
+def schedule_add(ctx, source: str, interval: str, database: str | None):
+    """Schedule periodic sync for a source.
+
+    INTERVAL uses systemd time format: 1h, 30m, 6h, 1d, etc.
+
+    Example: okb schedule add todoist 1h --db personal
+    """
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    okb_path = _get_okb_path()
+    if not okb_path:
+        click.echo("Error: okb-admin executable not found in PATH", err=True)
+        sys.exit(1)
+
+    systemd_dir = _get_systemd_user_dir()
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+
+    unit = _sync_unit_name(db_cfg.name, source)
+    service_path = systemd_dir / f"{unit}.service"
+    timer_path = systemd_dir / f"{unit}.timer"
+
+    updating = timer_path.exists()
+
+    service_path.write_text(_generate_sync_service(okb_path, db_cfg.name, source))
+    timer_path.write_text(_generate_sync_timer(db_cfg.name, source, interval))
+
+    _systemctl("daemon-reload", check=False)
+
+    result = _systemctl("enable", "--now", f"{unit}.timer", check=False)
+    if result.returncode != 0:
+        click.echo(f"Error enabling timer: {result.stderr}", err=True)
+        # Clean up on failure
+        service_path.unlink(missing_ok=True)
+        timer_path.unlink(missing_ok=True)
+        _systemctl("daemon-reload", check=False)
+        sys.exit(1)
+
+    if updating:
+        click.echo(f"Updated schedule: {source} ({db_cfg.name}) every {interval}")
+    else:
+        click.echo(f"Scheduled: {source} ({db_cfg.name}) every {interval}")
+
+
+@schedule.command("remove")
+@click.argument("source")
+@click.option("--db", "database", default=None, help="Database to remove schedule from")
+@click.pass_context
+def schedule_remove(ctx, source: str, database: str | None):
+    """Remove a scheduled sync timer.
+
+    Example: okb schedule remove todoist --db personal
+    """
+    db_name = database or ctx.obj.get("database")
+    db_cfg = config.get_database(db_name)
+
+    systemd_dir = _get_systemd_user_dir()
+    unit = _sync_unit_name(db_cfg.name, source)
+    timer_path = systemd_dir / f"{unit}.timer"
+    service_path = systemd_dir / f"{unit}.service"
+
+    if not timer_path.exists() and not service_path.exists():
+        click.echo(f"No schedule found for {source} ({db_cfg.name})")
+        sys.exit(1)
+
+    _systemctl("disable", "--now", f"{unit}.timer", check=False)
+
+    for path in [timer_path, service_path]:
+        if path.exists():
+            path.unlink()
+
+    _systemctl("daemon-reload", check=False)
+    click.echo(f"Removed schedule: {source} ({db_cfg.name})")
+
+
+@schedule.command("list")
+def schedule_list():
+    """List all active sync timers."""
+    result = subprocess.run(
+        ["systemctl", "--user", "list-timers", "okb-sync-*", "--no-pager"],
+        capture_output=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
 
 @main.group()

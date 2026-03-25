@@ -79,6 +79,9 @@ okb ingest ~/notes ~/docs
 | `okb enrich reject-merge <id>` | Reject an entity merge |
 | `okb enrich clusters` | List topic clusters |
 | `okb enrich relationships` | List entity relationships |
+| `okb schedule add <source> <interval>` | Schedule periodic sync via systemd timer |
+| `okb schedule remove <source>` | Remove a scheduled sync timer |
+| `okb schedule list` | List all active sync timers |
 | `okb service install` | Install systemd user services for background operation |
 | `okb service uninstall` | Remove systemd user services |
 | `okb service status` | Show service status |
