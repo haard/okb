@@ -46,7 +46,7 @@ okb/
 │   │   ├── index.ts          # Worker entry — wires OAuthProvider + proxy handler
 │   │   ├── github-handler.ts # /authorize → GitHub, /callback → token lookup
 │   │   └── types.ts          # Env and UserProps types
-│   ├── wrangler.toml         # Cloudflare Worker config
+│   ├── wrangler.template.toml # Cloudflare Worker config template (cp to wrangler.toml)
 │   └── package.json
 ├── data/
 │   └── init.sql     # PostgreSQL/pgvector schema (reference only)

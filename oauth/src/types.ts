@@ -27,7 +27,9 @@ export interface Env {
   // Your actual MCP server behind cloudflared
   MCP_UPSTREAM_URL: string;
 
-  // JSON string: { "github_username": "tok_xxx", ... }
+  // JSON string mapping GitHub usernames to OKB tokens.
+  // Single DB:  { "user": "okb_personal_rw_..." }
+  // Multi DB:   { "user": { "personal": "okb_personal_rw_...", "work": "okb_work_rw_..." } }
   // Set via wrangler secret put TOKEN_MAP
   TOKEN_MAP: string;
 }

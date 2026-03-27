@@ -55,6 +55,7 @@ plan.org
 .wrangler/
 oauth/node_modules/
 oauth/.wrangler/
+oauth/wrangler.toml
 
 # WSL metadata
 *:Zone.Identifier
