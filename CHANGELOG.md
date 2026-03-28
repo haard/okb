@@ -7,12 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.3.1a1] - 2025-03-25
+## [2.3.1a2] - 2026-03-28
 
 ### Added
+- Legacy SSE transport support for the HTTP server (`GET /sse` + `POST /messages/`) —
+  enables Mistral Le Chat and other older MCP clients that don't support Streamable HTTP
+- OAuth 2.1 shim (Cloudflare Worker) for Claude.ai remote MCP connections via GitHub login
+- Multi-database OAuth: `TOKEN_MAP` accepts `{"user": {"db1": "tok1", "db2": "tok2"}}` —
+  shows a database picker page during OAuth when multiple databases are configured
+- `wrangler.template.toml` for OAuth worker config (real `wrangler.toml` now gitignored)
 - `okb schedule add <source> <interval>` — schedule periodic sync via systemd user timers
 - `okb schedule remove <source>` — remove a scheduled sync timer
 - `okb schedule list` — list all active sync timers
+- Async sync runner (`sync_runner.py`) with `sync_status` migration for tracking sync state
+
+### Changed
+- `trigger_sync` and `trigger_rescan` MCP tools now run asynchronously
+
+### Security
+- HTTP server session tokens: validate token matches on existing sessions, evict expired
+  sessions on access
+- LLM synthesis/analysis: sanitize project names to prevent prompt injection
+- GitHub sync: validate repo format, reject path traversal in file paths
+- Token generation uses 128-bit random hex (was 64-bit)
 
 ## [2.3.0] - 2026-03-11
 
