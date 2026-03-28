@@ -1,33 +1,25 @@
 """HTTP transport server for MCP with token authentication.
 
 This module provides an HTTP server that serves the OKB MCP server with
-token-based authentication. Supports two transports:
+token-based authentication using Streamable HTTP transport. Tokens can be
+passed via Authorization header or query parameter. A single HTTP server
+can serve multiple databases, with the token determining which database to use.
 
-Streamable HTTP (RFC 9728) — modern clients (Claude.ai):
+Transport: Streamable HTTP (RFC 9728 compliant)
 - POST /mcp → send JSON-RPC messages, get SSE response
 - GET /mcp → optional standalone SSE for server notifications
 - DELETE /mcp → terminate session
 - Session ID in Mcp-Session-Id header
-
-Legacy SSE — older clients (Mistral Le Chat, etc.):
-- GET /sse → establish SSE stream, receive endpoint event
-- POST /messages/?session_id=<uuid> → send JSON-RPC messages
-
-Tokens can be passed via Authorization header or query parameter.
-A single HTTP server can serve multiple databases, with the token
-determining which database to use.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import sys
 import time
 from typing import Any
 
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CallToolResult, TextContent, Tool
 from starlette.middleware.cors import CORSMiddleware
@@ -39,12 +31,6 @@ from .local_embedder import warmup
 from .mcp_server import KnowledgeBase
 from .tokens import OKBTokenVerifier, TokenInfo
 from .tools import execute_tool
-
-# Context variable for passing token info into SSE sessions.
-# Set before server.run() so call_tool handlers can access it.
-_sse_token_info: contextvars.ContextVar[TokenInfo | None] = contextvars.ContextVar(
-    "_sse_token_info", default=None
-)
 
 # Permission sets
 READ_ONLY_TOOLS = frozenset(
@@ -110,10 +96,8 @@ class HTTPMCPServer:
         self.server = Server(
             "knowledge-base", version=__version__, instructions=f"OKB v{__version__}"
         )
-        # Streamable HTTP transport (modern clients)
+        # Session manager handles all transport complexity
         self.session_manager = StreamableHTTPSessionManager(app=self.server)
-        # Legacy SSE transport (Mistral, older clients)
-        self.sse_transport = SseServerTransport("/messages/")
         # Map mcp-session-id -> (token_info, created_monotonic)
         self.session_tokens: dict[str, tuple[TokenInfo, float]] = {}
         self._max_sessions = 1000
@@ -140,7 +124,7 @@ class HTTPMCPServer:
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             """Handle tool invocations with permission checking."""
-            # Look up auth context — try Streamable HTTP session first, then SSE context var
+            # Look up auth context via the MCP request_context (per-task)
             token_info: TokenInfo | None = None
             try:
                 req = self.server.request_context.request
@@ -152,10 +136,6 @@ class HTTPMCPServer:
                             token_info = entry[0]
             except LookupError:
                 pass
-
-            # Fall back to SSE context variable (set per-connection in handle_sse)
-            if token_info is None:
-                token_info = _sse_token_info.get()
 
             if token_info is None:
                 return CallToolResult(
@@ -296,90 +276,14 @@ class HTTPMCPServer:
         # Create the MCP handler ASGI app
         mcp_handler = create_mcp_handler()
 
-        def create_sse_handlers():
-            """Create ASGI handlers for legacy SSE transport."""
-
-            async def handle_sse_connect(scope, receive, send):
-                """Handle GET /sse — establish SSE stream."""
-                request = Request(scope, receive)
-                token = extract_token(request)
-                if not token:
-                    response = JSONResponse(
-                        {"error": "Missing token. Use Authorization header or ?token= param"},
-                        status_code=401,
-                    )
-                    await response(scope, receive, send)
-                    return
-
-                token_info = verifier.verify(token)
-                if not token_info:
-                    response = JSONResponse(
-                        {"error": "Invalid or expired token"}, status_code=401
-                    )
-                    await response(scope, receive, send)
-                    return
-
-                # Set token info in context var for call_tool to read.
-                # Safe for concurrent connections: uvicorn runs each in a separate
-                # asyncio task, and contextvars are isolated per task.
-                _sse_token_info.set(token_info)
-
-                async with self.sse_transport.connect_sse(scope, receive, send) as streams:
-                    await self.server.run(
-                        streams[0],
-                        streams[1],
-                        self.server.create_initialization_options(),
-                    )
-
-            async def handle_sse_messages(scope, receive, send):
-                """Handle POST /messages/ — receive JSON-RPC messages for SSE session."""
-                request = Request(scope, receive)
-                token = extract_token(request)
-                if not token:
-                    response = JSONResponse(
-                        {"error": "Missing token. Use Authorization header or ?token= param"},
-                        status_code=401,
-                    )
-                    await response(scope, receive, send)
-                    return
-
-                token_info = verifier.verify(token)
-                if not token_info:
-                    response = JSONResponse(
-                        {"error": "Invalid or expired token"}, status_code=401
-                    )
-                    await response(scope, receive, send)
-                    return
-
-                await self.sse_transport.handle_post_message(scope, receive, send)
-
-            return handle_sse_connect, handle_sse_messages
-
-        sse_connect_handler, sse_messages_handler = create_sse_handlers()
-
-        # Route requests to appropriate transport
+        # Custom ASGI app that routes /mcp and /sse to MCP handler
         async def router(scope, receive, send):
             if scope["type"] == "http":
                 path = scope["path"].rstrip("/")  # Handle trailing slash
-                method = scope.get("method", "GET")
-
-                if path == "/mcp":
-                    # Streamable HTTP only
+                if path in ("/mcp", "/sse"):
                     await mcp_handler(scope, receive, send)
                     return
-                elif path == "/sse":
-                    if method == "GET":
-                        # Legacy SSE: establish stream
-                        await sse_connect_handler(scope, receive, send)
-                    else:
-                        # POST/DELETE on /sse → Streamable HTTP (backward compat)
-                        await mcp_handler(scope, receive, send)
-                    return
-                elif path == "/messages" or path == "/messages/":
-                    # Legacy SSE: message endpoint
-                    await sse_messages_handler(scope, receive, send)
-                    return
-                elif path == "/health":
+                elif path == "/health" or scope["path"] == "/health":
                     response = JSONResponse({"status": "ok"})
                     await response(scope, receive, send)
                     return
@@ -426,8 +330,9 @@ def run_http_server(host: str = "127.0.0.1", port: int = 8080):
     app = http_server.create_app()
 
     print(f"Starting HTTP MCP server on http://{host}:{port}", file=sys.stderr)
-    print("  Streamable HTTP: /mcp (POST, GET, DELETE)", file=sys.stderr)
-    print("  Legacy SSE:      /sse (GET) + /messages/ (POST)", file=sys.stderr)
-    print("  Health:           /health", file=sys.stderr)
+    print("  MCP endpoint: /mcp (GET, POST, DELETE)", file=sys.stderr)
+    print("  MCP endpoint: /sse (alias for /mcp)", file=sys.stderr)
+    print("  Health endpoint: /health", file=sys.stderr)
+    print("  Transport: Streamable HTTP", file=sys.stderr)
 
     uvicorn.run(app, host=host, port=port, log_level="info")

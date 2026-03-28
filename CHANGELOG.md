@@ -10,8 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.3.1a2] - 2026-03-28
 
 ### Added
-- Legacy SSE transport support for the HTTP server (`GET /sse` + `POST /messages/`) —
-  enables Mistral Le Chat and other older MCP clients that don't support Streamable HTTP
 - OAuth 2.1 shim (Cloudflare Worker) for Claude.ai remote MCP connections via GitHub login
 - Multi-database OAuth: `TOKEN_MAP` accepts `{"user": {"db1": "tok1", "db2": "tok2"}}` —
   shows a database picker page during OAuth when multiple databases are configured
