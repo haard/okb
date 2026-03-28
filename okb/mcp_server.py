@@ -1402,6 +1402,10 @@ def _save_snapshot(name: str | None = None, db_name: str | None = None) -> str:
     if not name:
         name = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
 
+    # Validate snapshot name to prevent path traversal
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]+", name):
+        return "Error: invalid snapshot name (use letters, digits, _, ., -)"
+
     snapshots_dir = get_snapshots_dir(db_cfg.database_name)
     snapshot_path = snapshots_dir / f"{name}.dump"
     snapshots_dir.mkdir(parents=True, exist_ok=True)
@@ -1468,6 +1472,10 @@ def _restore_snapshot(name: str, confirm: bool, db_name: str | None = None) -> s
             "Error: restore requires explicit confirmation. "
             "Set confirm=true to proceed. WARNING: This will replace ALL data in the database."
         )
+
+    # Validate snapshot name to prevent path traversal
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]+", name):
+        return "Error: invalid snapshot name (use letters, digits, _, ., -)"
 
     db_cfg = config.get_database(db_name)
 

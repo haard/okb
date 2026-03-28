@@ -740,5 +740,8 @@ async def execute_tool(
         else:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
-    except Exception as e:
-        return CallToolResult(content=[TextContent(type="text", text=f"Error: {e!s}")])
+    except Exception:
+        import logging
+
+        logging.getLogger("okb.tools").exception("Tool '%s' failed", name)
+        return CallToolResult(content=[TextContent(type="text", text="Error: internal error")])

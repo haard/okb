@@ -142,8 +142,8 @@ class HTTPMCPServer:
                     content=[TextContent(type="text", text="Error: No authentication context")]
                 )
 
-            # Check permissions
-            if name in WRITE_TOOLS and token_info.permissions == "ro":
+            # Check permissions (allow-list: reject unknown tools for ro tokens)
+            if token_info.permissions == "ro" and name not in READ_ONLY_TOOLS:
                 return CallToolResult(
                     content=[
                         TextContent(

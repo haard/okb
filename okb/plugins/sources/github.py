@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -437,12 +438,12 @@ class GitHubSource:
         wiki_url = f"https://github.com/{repo.full_name}.wiki.git"
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a GIT_ASKPASS script to avoid embedding token in URL/process args
+            # Create a GIT_ASKPASS script — owner-only permissions (0500)
             askpass_fd, askpass_path = tempfile.mkstemp(suffix=".sh", prefix="okb_askpass_")
             try:
-                with os.fdopen(askpass_fd, "w") as f:
-                    f.write(f"#!/bin/sh\necho {self._token}\n")
                 os.chmod(askpass_path, stat.S_IRUSR | stat.S_IXUSR)
+                with os.fdopen(askpass_fd, "w") as f:
+                    f.write(f"#!/bin/sh\necho {shlex.quote(self._token)}\n")
 
                 clone_env = {
                     **os.environ,
