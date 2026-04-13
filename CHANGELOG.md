@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.3.1a2] - 2026-03-28
-
+## [2.3.1] - 2026-04-13
 ### Added
+- Legacy SSE transport at `/legacy/sse` and `/legacy/messages` for older MCP clients that
+  don't support Streamable HTTP
 - OAuth 2.1 shim (Cloudflare Worker) for Claude.ai remote MCP connections via GitHub login
 - Multi-database OAuth: `TOKEN_MAP` accepts `{"user": {"db1": "tok1", "db2": "tok2"}}` —
   shows a database picker page during OAuth when multiple databases are configured
@@ -18,16 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `okb schedule remove <source>` — remove a scheduled sync timer
 - `okb schedule list` — list all active sync timers
 - Async sync runner (`sync_runner.py`) with `sync_status` migration for tracking sync state
-
-### Changed
-- `trigger_sync` and `trigger_rescan` MCP tools now run asynchronously
+- `list_sync_sources` now shows running/error status and last error message
 
 ### Security
+- Read-only token permission check switched from deny-list to allow-list — unknown tools
+  are now rejected for `ro` tokens instead of only blocking known write tools
+- Snapshot name validation prevents path traversal in `save_snapshot` and `restore_snapshot`
+- GitHub GIT_ASKPASS: set owner-only permissions before writing, quote token with `shlex`
+- Tool error responses no longer leak exception details (logged internally, generic message
+  returned to client)
 - HTTP server session tokens: validate token matches on existing sessions, evict expired
   sessions on access
 - LLM synthesis/analysis: sanitize project names to prevent prompt injection
 - GitHub sync: validate repo format, reject path traversal in file paths
 - Token generation uses 128-bit random hex (was 64-bit)
+
+### Changed
+- `trigger_sync` and `trigger_rescan` MCP tools now run asynchronously and return immediately
+- HTTP server session management: TTL-based eviction (24h), capped at 1000 sessions
+
 
 ## [2.3.0] - 2026-03-11
 

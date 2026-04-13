@@ -67,18 +67,14 @@ okb ingest ~/notes ~/docs
 | `okb llm status` | Show LLM config and connectivity |
 | `okb llm deploy` | Deploy Modal LLM for open model inference |
 | `okb llm clear-cache` | Clear LLM response cache |
-| `okb enrich run` | Extract TODOs and entities from documents |
-| `okb enrich run --dry-run` | Show what would be enriched |
-| `okb enrich pending` | List entities awaiting review |
-| `okb enrich approve <id>` | Approve a pending entity |
-| `okb enrich reject <id>` | Reject a pending entity |
-| `okb enrich analyze` | Analyze database and update description/topics |
-| `okb enrich consolidate` | Run entity consolidation (duplicates, clusters) |
-| `okb enrich merge-proposals` | List pending merge proposals |
-| `okb enrich approve-merge <id>` | Approve an entity merge |
-| `okb enrich reject-merge <id>` | Reject an entity merge |
-| `okb enrich clusters` | List topic clusters |
-| `okb enrich relationships` | List entity relationships |
+| `okb synthesize run` | Generate knowledge synthesis proposals |
+| `okb synthesize run --dry-run` | Preview what would be sampled |
+| `okb synthesize pending` | List pending synthesis proposals |
+| `okb synthesize approve <id>` | Approve a synthesis proposal |
+| `okb synthesize reject <id>` | Reject a synthesis proposal |
+| `okb synthesize review` | Interactive review loop (A/E/R/S/Q) |
+| `okb synthesize analyze` | Analyze database and update description/topics |
+| `okb synthesize analyze --stats-only` | Show stats without LLM call |
 | `okb schedule add <source> <interval>` | Schedule periodic sync via systemd timer |
 | `okb schedule remove <source>` | Remove a scheduled sync timer |
 | `okb schedule list` | List all active sync timers |
@@ -189,7 +185,7 @@ databases:
 
 ### LLM Integration (Optional)
 
-Enable LLM-based document classification, filtering, and enrichment:
+Enable LLM-based document classification, filtering, and synthesis:
 
 ```yaml
 llm:
@@ -237,34 +233,27 @@ plugins:
         action_on_skip: discard  # or "archive"
 ```
 
-### Document Enrichment
+### Knowledge Synthesis
 
-Extract TODOs and entities (people, projects, technologies) from documents using LLM:
+LLM-based synthesis generates topic summaries, entity profiles, and cross-cutting insights
+from your knowledge base:
 
 ```bash
-okb enrich run                      # Enrich un-enriched documents
-okb enrich run --dry-run            # Preview what would be enriched
-okb enrich run --source-type markdown  # Only markdown files
-okb enrich run --query "meeting"    # Filter by semantic search
+okb synthesize run                        # Generate synthesis proposals
+okb synthesize run --project myproject    # Scope to specific project
+okb synthesize run --max-proposals 5      # Limit proposals
+okb synthesize run --dry-run              # Preview what would be sampled
+okb synthesize pending                    # List pending proposals
+okb synthesize approve <id>              # Approve → creates searchable document
+okb synthesize reject <id>               # Reject proposal
+okb synthesize review                    # Interactive review (A/E/R/S/Q)
 ```
 
-Entities are created as pending suggestions for review:
+Analyze the knowledge base to generate/update description and topics:
 ```bash
-okb enrich pending                  # List pending entities
-okb enrich approve <id>             # Approve → creates entity document
-okb enrich reject <id>              # Reject → hidden from future suggestions
-```
-
-Configure enrichment behavior:
-```yaml
-enrichment:
-  enabled: true
-  extract_todos: true
-  extract_entities: true
-  auto_create_todos: true       # TODOs created immediately
-  auto_create_entities: false   # Entities go to pending review
-  min_confidence_todo: 0.7
-  min_confidence_entity: 0.8
+okb synthesize analyze                   # Analyze and update metadata
+okb synthesize analyze --stats-only      # Show stats without LLM call
+okb synthesize analyze --project myproj  # Analyze specific project
 ```
 
 CLI commands:
@@ -304,11 +293,17 @@ okb token create --db default -d "Claude Code"
 okb serve --http --host 0.0.0.0 --port 8080
 ```
 
-The server uses Streamable HTTP transport (RFC 9728 compliant):
+The server supports two transports:
+
+**Streamable HTTP** (primary, RFC 9728 compliant):
 - `POST /mcp` - Send JSON-RPC messages, receive SSE response
 - `GET /mcp` - Establish SSE connection for server notifications
 - `DELETE /mcp` - Terminate session
-- `/sse` is an alias for `/mcp` for backward compatibility
+- `/sse` is an alias for `/mcp`
+
+**Legacy SSE** (for older MCP clients):
+- `GET /legacy/sse` - Establish SSE stream
+- `POST /legacy/messages` - Send JSON-RPC messages
 
 Configure your MCP client to connect:
 
@@ -336,30 +331,32 @@ Configure your MCP client to connect:
 | `get_document` | Retrieve full document by path |
 | `list_sources` | Show indexed document stats |
 | `list_projects` | List known projects |
+| `list_documents_by_project` | List all documents for a specific project |
+| `get_project_stats` | List projects with document counts |
+| `rename_project` | Rename a project across all documents |
+| `set_document_project` | Set/clear project for a single document |
 | `recent_documents` | Show recently indexed files |
 | `save_knowledge` | Save knowledge from Claude (`source_type`: `claude-note` or `synthesis`) |
-| `delete_knowledge` | Delete a Claude-saved knowledge entry |
+| `update_knowledge` | Update an existing document in-place |
+| `delete_knowledge` | Delete any document by source path |
 | `get_actionable_items` | Query tasks/events with structured filters |
 | `get_database_info` | Get database description, topics, and stats |
 | `set_database_description` | Update database description/topics (LLM can self-document) |
 | `add_todo` | Create a TODO item in the knowledge base |
-| `trigger_sync` | Sync API sources (Todoist, GitHub, Dropbox Paper). Accepts `repos` for GitHub. |
-| `trigger_rescan` | Check indexed files for changes and re-ingest |
-| `list_sync_sources` | List available API sync sources with status |
-| `enrich_document` | Run LLM enrichment to extract TODOs/entities |
-| `list_pending_entities` | List entities awaiting review |
-| `approve_entity` | Approve a pending entity |
-| `reject_entity` | Reject a pending entity |
+| `trigger_sync` | Sync API sources (runs in background, use `list_sync_sources` to check) |
+| `trigger_rescan` | Check indexed files for changes and re-ingest (background) |
+| `list_sync_sources` | List API sync sources with status (idle/running/error) |
+| `ingest_documents` | Ingest pre-parsed documents (chunking, embedding, storage) |
 | `analyze_knowledge_base` | Analyze content and generate description/topics |
 | `get_synthesis_samples` | Get document samples and stats for LLM-driven synthesis |
-| `find_entity_duplicates` | Find potential duplicate entities |
-| `merge_entities` | Merge duplicate entities |
-| `list_pending_merges` | List pending merge proposals |
-| `approve_merge` | Approve a merge proposal |
-| `reject_merge` | Reject a merge proposal |
-| `get_topic_clusters` | Get topic clusters from consolidation |
-| `get_entity_relationships` | Get relationships between entities |
-| `run_consolidation` | Run full entity consolidation pipeline |
+| `synthesize_knowledge` | Analyze DB and propose synthetic knowledge documents |
+| `list_pending_synthesis` | List pending synthesis proposals |
+| `approve_synthesis` | Approve a proposal, creating a searchable document |
+| `reject_synthesis` | Reject a pending synthesis proposal |
+| `edit_pending_synthesis` | Edit a proposal before approve/reject |
+| `save_snapshot` | Create database snapshot for backup |
+| `list_snapshots` | List available database snapshots |
+| `restore_snapshot` | Restore database from snapshot |
 
 ## Claude.ai Integration (OAuth Shim)
 

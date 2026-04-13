@@ -1,15 +1,20 @@
 """HTTP transport server for MCP with token authentication.
 
 This module provides an HTTP server that serves the OKB MCP server with
-token-based authentication using Streamable HTTP transport. Tokens can be
-passed via Authorization header or query parameter. A single HTTP server
-can serve multiple databases, with the token determining which database to use.
+token-based authentication. Tokens can be passed via Authorization header
+or query parameter. A single HTTP server can serve multiple databases,
+with the token determining which database to use.
 
-Transport: Streamable HTTP (RFC 9728 compliant)
-- POST /mcp → send JSON-RPC messages, get SSE response
-- GET /mcp → optional standalone SSE for server notifications
-- DELETE /mcp → terminate session
-- Session ID in Mcp-Session-Id header
+Transports:
+  Streamable HTTP (RFC 9728) — primary, at /mcp and /sse
+    - POST /mcp → send JSON-RPC messages, get SSE response
+    - GET /mcp → optional standalone SSE for server notifications
+    - DELETE /mcp → terminate session
+    - Session ID in Mcp-Session-Id header
+
+  Legacy SSE — for older MCP clients, at /legacy/sse
+    - GET /legacy/sse → establish SSE stream (receives endpoint event)
+    - POST /legacy/messages → send JSON-RPC messages
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import time
 from typing import Any
 
 from mcp.server import Server
+from mcp.server.sse import SseServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CallToolResult, TextContent, Tool
 from starlette.middleware.cors import CORSMiddleware
@@ -104,6 +110,7 @@ class HTTPMCPServer:
         self._session_ttl = 86400  # 24 hours
         # Per-KB asyncio locks for connection safety
         self.kb_locks: dict[str, asyncio.Lock] = {}
+        self.verifier = OKBTokenVerifier(self._get_db_url)
         self._setup_handlers()
 
     def _get_db_url(self, db_name: str) -> str:
@@ -129,11 +136,17 @@ class HTTPMCPServer:
             try:
                 req = self.server.request_context.request
                 if req is not None:
+                    # Path 1: Streamable HTTP — lookup by mcp-session-id
                     session_id = req.headers.get("mcp-session-id")
                     if session_id:
                         entry = self.session_tokens.get(session_id)
                         if entry is not None:
                             token_info = entry[0]
+                    # Path 2: Legacy SSE — extract token from POST request
+                    if token_info is None:
+                        raw = extract_token(req)
+                        if raw:
+                            token_info = self.verifier.verify(raw)
             except LookupError:
                 pass
 
@@ -172,7 +185,7 @@ class HTTPMCPServer:
 
     def create_app(self):
         """Create the Starlette application."""
-        verifier = OKBTokenVerifier(self._get_db_url)
+        verifier = self.verifier
         session_header_name = "mcp-session-id"
 
         def create_mcp_handler():
@@ -276,12 +289,54 @@ class HTTPMCPServer:
         # Create the MCP handler ASGI app
         mcp_handler = create_mcp_handler()
 
-        # Custom ASGI app that routes /mcp and /sse to MCP handler
+        # Legacy SSE transport for older MCP clients
+        sse_transport = SseServerTransport("/legacy/messages")
+
+        def _auth_reject(msg: str, status: int = 401):
+            """Return a JSONResponse for auth failures."""
+            return JSONResponse({"error": msg}, status_code=status)
+
+        async def handle_legacy_sse(scope, receive, send):
+            """Handle GET /legacy/sse — establish SSE stream."""
+            request = Request(scope, receive)
+            token = extract_token(request)
+            if not token:
+                r = _auth_reject("Missing token. Use Authorization header or ?token= param")
+                await r(scope, receive, send)
+                return
+            if not verifier.verify(token):
+                r = _auth_reject("Invalid or expired token")
+                await r(scope, receive, send)
+                return
+            async with sse_transport.connect_sse(scope, receive, send) as (read, write):
+                await self.server.run(read, write, self.server.create_initialization_options())
+
+        async def handle_legacy_messages(scope, receive, send):
+            """Handle POST /legacy/messages — receive JSON-RPC messages."""
+            request = Request(scope, receive)
+            token = extract_token(request)
+            if not token:
+                r = _auth_reject("Missing token. Use Authorization header or ?token= param")
+                await r(scope, receive, send)
+                return
+            if not verifier.verify(token):
+                r = _auth_reject("Invalid or expired token")
+                await r(scope, receive, send)
+                return
+            await sse_transport.handle_post_message(scope, receive, send)
+
+        # Custom ASGI app that routes requests to the appropriate handler
         async def router(scope, receive, send):
             if scope["type"] == "http":
                 path = scope["path"].rstrip("/")  # Handle trailing slash
                 if path in ("/mcp", "/sse"):
                     await mcp_handler(scope, receive, send)
+                    return
+                elif path == "/legacy/sse":
+                    await handle_legacy_sse(scope, receive, send)
+                    return
+                elif path == "/legacy/messages":
+                    await handle_legacy_messages(scope, receive, send)
                     return
                 elif path == "/health" or scope["path"] == "/health":
                     response = JSONResponse({"status": "ok"})
@@ -330,9 +385,9 @@ def run_http_server(host: str = "127.0.0.1", port: int = 8080):
     app = http_server.create_app()
 
     print(f"Starting HTTP MCP server on http://{host}:{port}", file=sys.stderr)
-    print("  MCP endpoint: /mcp (GET, POST, DELETE)", file=sys.stderr)
-    print("  MCP endpoint: /sse (alias for /mcp)", file=sys.stderr)
-    print("  Health endpoint: /health", file=sys.stderr)
-    print("  Transport: Streamable HTTP", file=sys.stderr)
+    print("  Streamable HTTP: /mcp (GET, POST, DELETE)", file=sys.stderr)
+    print("  Streamable HTTP: /sse (alias for /mcp)", file=sys.stderr)
+    print("  Legacy SSE:      GET /legacy/sse, POST /legacy/messages", file=sys.stderr)
+    print("  Health:           /health", file=sys.stderr)
 
     uvicorn.run(app, host=host, port=port, log_level="info")
