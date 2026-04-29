@@ -329,13 +329,25 @@ class HTTPMCPServer:
         async def router(scope, receive, send):
             if scope["type"] == "http":
                 path = scope["path"].rstrip("/")  # Handle trailing slash
+                method = scope.get("method", "GET")
                 if path in ("/mcp", "/sse"):
                     await mcp_handler(scope, receive, send)
                     return
                 elif path == "/legacy/sse":
-                    await handle_legacy_sse(scope, receive, send)
+                    if method == "GET":
+                        await handle_legacy_sse(scope, receive, send)
+                    else:
+                        # POST/DELETE on the SSE URL → treat as Streamable HTTP
+                        # (some clients probe both transports on the same URL).
+                        await mcp_handler(scope, receive, send)
                     return
                 elif path == "/legacy/messages":
+                    if method != "POST":
+                        response = JSONResponse(
+                            {"error": "Method not allowed"}, status_code=405
+                        )
+                        await response(scope, receive, send)
+                        return
                     await handle_legacy_messages(scope, receive, send)
                     return
                 elif path == "/health" or scope["path"] == "/health":

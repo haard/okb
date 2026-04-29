@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-04-29
+### Fixed
+- HTTP server: `POST`/`DELETE` to `/legacy/sse` now routes to Streamable HTTP instead of
+  spawning a ghost legacy SSE session, fixing hangs with clients (e.g. Mistral Le Chat)
+  that probe both transports on the same URL
+- HTTP server: `/legacy/messages` returns 405 on non-`POST` requests instead of falling
+  through to the SSE message handler
+
 ## [2.3.1] - 2026-04-13
 ### Added
 - Legacy SSE transport at `/legacy/sse` and `/legacy/messages` for older MCP clients that
