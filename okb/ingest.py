@@ -369,18 +369,19 @@ def extract_org_tags(header: str) -> tuple[str, list[str]]:
     return header, []
 
 
-def extract_sections_org(content: str) -> list[tuple[str, str]]:
+def extract_sections_org(content: str, filename: str | None = None) -> list[tuple[str, str]]:
     """
     Extract sections from org-mode content.
 
     Org headers use * (one or more) at start of line.
     Returns list of (header, section_content) tuples.
+    Uses filename as fallback header for content before first heading.
     """
     # Split by org headers (any level)
     parts = re.split(r"(^\*+\s+.+$)", content, flags=re.MULTILINE)
 
     sections = []
-    current_header = None
+    current_header = filename if filename else "Document"
 
     for part in parts:
         if re.match(r"^\*+\s+", part):
@@ -846,7 +847,7 @@ def parse_org(path: Path, extra_metadata: dict | None = None) -> Document:
             title = path.stem
 
     # Extract sections
-    sections = extract_sections_org(body)
+    sections = extract_sections_org(body, filename=path.stem)
 
     return Document(
         source_path=str(path.resolve()),

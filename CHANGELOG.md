@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-04-30
+### Fixed
+- Org-mode parsing: content before first heading (e.g., metadata lines) now uses filename
+  as section header instead of `None`, fixing schema validation error when ingesting
+  org files without initial `* Heading` line
+
 ## [2.3.2] - 2026-04-29
 ### Fixed
 - HTTP server: `POST`/`DELETE` to `/legacy/sse` now routes to Streamable HTTP instead of
