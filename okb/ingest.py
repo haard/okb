@@ -201,6 +201,19 @@ class Document:
     status: str | None = None  # 'pending', 'completed', 'cancelled', etc.
     priority: int | None = None  # 1-5 scale (1=highest)
 
+    def __post_init__(self):
+        # Fail fast in the parser process — these four fields are required
+        # strings on the server's ingest_documents JSON schema, so a None
+        # would otherwise surface as an opaque schema error after a network
+        # round-trip and abort the whole batch.
+        for fname in ("source_path", "source_type", "title", "content"):
+            v = getattr(self, fname)
+            if not isinstance(v, str):
+                raise TypeError(
+                    f"Document.{fname} must be str, got {type(v).__name__} "
+                    f"({v!r}); source_path={self.source_path!r}"
+                )
+
     def to_dict(self) -> dict:
         """Serialize to JSON-compatible dict for remote transport."""
         d: dict = {

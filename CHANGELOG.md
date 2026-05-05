@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.4] - 2026-05-05
+### Fixed
+- MCP client: `OKBClient.call_tool` now raises `ToolError` when the server flags a result with
+  `isError=True`, instead of silently returning the error text. Fixes `okb ingest` reporting
+  "Done! N document(s) ingested." after the server actually rejected the batch with a schema
+  validation error
+- Ingest: `Document.__post_init__` validates that `source_path`, `source_type`, `title`, and
+  `content` are strings, failing fast in the parser process instead of surfacing as an opaque
+  `None is not of type 'string'` schema error after a network round-trip
+
 ## [2.3.3] - 2026-04-30
 ### Fixed
 - Org-mode parsing: content before first heading (e.g., metadata lines) now uses filename

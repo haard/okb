@@ -10,6 +10,10 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 
+class ToolError(RuntimeError):
+    """Raised when an MCP tool call returns isError=True."""
+
+
 class OKBClient:
     """MCP client that connects to an OKB HTTP server."""
 
@@ -18,7 +22,11 @@ class OKBClient:
         self.token = token
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
-        """Call an MCP tool and return the text result."""
+        """Call an MCP tool and return the text result.
+
+        Raises ToolError if the server flags the result with isError=True
+        (e.g. input validation failure, permission denied, tool exception).
+        """
         http_client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {self.token}"},
             timeout=httpx.Timeout(60, read=300),
@@ -36,7 +44,10 @@ class OKBClient:
                     for block in result.content:
                         if hasattr(block, "text"):
                             parts.append(block.text)
-                    return "\n".join(parts)
+                    text = "\n".join(parts)
+                    if getattr(result, "isError", False):
+                        raise ToolError(text or f"Tool {name!r} returned error with no message")
+                    return text
 
     def call_tool_sync(self, name: str, arguments: dict[str, Any] | None = None) -> str:
         """Synchronous wrapper around call_tool."""
